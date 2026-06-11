@@ -85,14 +85,15 @@ def table_plot_size():
 
 def table_to_plot(pos):
     x, y = pos
-    return np.asarray((y * ZOOM_FACTOR, x * ZOOM_FACTOR), dtype=float) + TABLE_ORIGIN
+    # Match pooltool's displayed orientation: table y increases right-to-left on the selector.
+    return np.asarray(((ChineseTableSpecs.TABLE_LENGTH - y) * ZOOM_FACTOR, x * ZOOM_FACTOR), dtype=float) + TABLE_ORIGIN
 
 
 def plot_to_table(pos):
     x_plot, y_plot = pos
     return (
         float((y_plot - TABLE_ORIGIN[1]) / ZOOM_FACTOR),
-        float((x_plot - TABLE_ORIGIN[0]) / ZOOM_FACTOR),
+        float(ChineseTableSpecs.TABLE_LENGTH - ((x_plot - TABLE_ORIGIN[0]) / ZOOM_FACTOR)),
     )
 
 
@@ -149,12 +150,12 @@ def create_pockets(ax):
     fig_radius = 0.1 * ZOOM_FACTOR
 
     pocket_specs = {
-        "lb": (fig_pocket_pos[0], 0, 90),
+        "lt": (fig_pocket_pos[0], 0, 90),
         "lc": (fig_pocket_pos[1], 0, 180),
-        "lt": (fig_pocket_pos[2] + np.asarray((0.225, 0.0)), 90, 180),
-        "rb": (fig_pocket_pos[3] + np.asarray((0.0, 0.225)), -90, 0),
+        "lb": (fig_pocket_pos[2] + np.asarray((0.225, 0.0)), 90, 180),
+        "rt": (fig_pocket_pos[3] + np.asarray((0.0, 0.225)), -90, 0),
         "rc": (fig_pocket_pos[4] + np.asarray((0.0, 0.225)), 180, 0),
-        "rt": (fig_pocket_pos[5] + 0.225, 180, 270),
+        "rb": (fig_pocket_pos[5] + 0.225, 180, 270),
     }
 
     return {
