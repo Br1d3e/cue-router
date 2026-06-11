@@ -206,7 +206,7 @@ class ShotEvaluation:
         d = self.target_ball_closest_pocket_distance(shot, target_id, pocket_id, continuize=True)
         return limit * 1 / (1 + k * d)
 
-    def get_cue_route_quality(self, shot: pt.System, target_id, k_1=0.3, k_2=0.1) -> float:
+    def get_cue_route_quality(self, shot: pt.System, target_id, k_1=0.6, k_2=0.1) -> float:
         pc = self.cue_pocket_corner_collision_count(shot)
         cbb = self.cue_ball_collision_count(shot, target_id)
         return 0.5 + 0.5 / (1 + (k_1 * pc + k_2 * (cbb ** 2)))
