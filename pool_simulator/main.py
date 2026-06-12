@@ -5,13 +5,14 @@ from table import ChineseTableSpecs
 from search import PolicySearch, SearchRequest
 from geometry import Rect
 from visual import PoolLayout, select_pool_layout
+from evaluation import ShotEvaluation, ShotScoreConfig
 
 
 chinese_table = ChineseTableSpecs.chinese_table
 USE_VISUAL_SELECTOR = True
 USE_QUICK_SEARCH = True
 TOP_K = 5
-SEARCH_ROUNDS = 2
+SEARCH_ROUNDS = 5
 
 
 def manual_layout():
@@ -53,6 +54,7 @@ def main():
         k=TOP_K,
         precise=not USE_QUICK_SEARCH,
         n_rounds=SEARCH_ROUNDS,
+        eval_config=None,
     )
     if TOP_K == 1:
         top_k_scores = [top_k_scores]
@@ -65,11 +67,22 @@ def main():
         top_score = top_k_scores[i]
         top_policy = top_k_policies[i]
 
-        print("score:", round(top_score, 3))
         print(top_policy)
 
         top_shot = search_request.shot.copy()
         top_shot.cue.set_state(V0=top_policy.V0, phi=top_policy.phi, a=top_policy.a, b=top_policy.b)
+
+        shot_evaluator = ShotEvaluation(config=searcher.EVAL_CONFIG)
+        score = shot_evaluator.evaluate_shot_final(
+            top_shot,
+            search_request.target_ball_id,
+            search_request.target_pocket_id,
+            search_request.target_rect,
+        )
+        if shot_evaluator.position_quality <= 0.4:
+            print(f"Skipping route: position quality={shot_evaluator.position_quality} is too low")
+            continue
+        shot_evaluator.print_score_breakdown()
 
         pt.simulate(top_shot, inplace=True)
         pt.show(top_shot)

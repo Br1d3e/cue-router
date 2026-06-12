@@ -3,10 +3,10 @@ import pooltool as pt
 
 try:
     from ..action import ShotAction
-    from ..evaluation import ShotEvaluation
+    from ..evaluation import ShotEvaluation, ShotScoreConfig
 except ImportError:
     from action import ShotAction
-    from evaluation import ShotEvaluation
+    from evaluation import ShotEvaluation, ShotScoreConfig
 
 
 class PatternSearch:
@@ -27,6 +27,10 @@ class PatternSearch:
         (-1, 0, -1, 0),
         (1, 0, -1, 0),
         (-1, 0, 1, 0),
+        (2, 0, 1, 0),
+        (-2, 0, -1, 0),
+        (2, 0, -1, 0),
+        (-2, 0, 1, 0),
         (1, 0, 0, 1),
         (-1, 0, 0, -1),
         (1, 0, 0, -1),
@@ -43,13 +47,16 @@ class PatternSearch:
     IMPROVEMENT_EPS = 0.02
     MAX_SEARCHES = 3
 
-    def __init__(self, search_request):
+    def __init__(self, search_request, eval_config: ShotScoreConfig):
         self.shot = search_request.shot
         self.target_ball_id = search_request.target_ball_id
         self.target_pocket_id = search_request.target_pocket_id
         self.target_rect = search_request.target_rect
+        self.eval_config = eval_config
 
-    def search_once(self, init_score, policy: ShotAction, directions=DIRECTIONS, step=STEP, improv_eps=IMPROVEMENT_EPS):
+    def search_once(self, init_score, policy: ShotAction, directions=DIRECTIONS,
+                    step=STEP, improv_eps=IMPROVEMENT_EPS,
+                    eval_config=None):
         best_score = init_score
         best_policy = policy
         phi, V0, a, b = policy.as_array()
@@ -70,15 +77,13 @@ class PatternSearch:
             new_shot = self.shot.copy()
             new_shot.cue.set_state(V0=new_V0, a=new_a, b=new_b, phi=new_phi, theta=0.0)
 
-            pt.simulate(new_shot, inplace=True, continuous=True)
-
-            new_score = ShotEvaluation(
+            shot_evaluator = ShotEvaluation(config=eval_config)
+            new_score = shot_evaluator.evaluate_shot_strict(
                 new_shot,
                 self.target_ball_id,
                 self.target_pocket_id,
                 self.target_rect,
-                continuize=True,
-            ).score
+            )
             new_policy = ShotAction(new_phi, new_V0, new_a, new_b)
 
             if new_score > best_score + improv_eps:
@@ -92,7 +97,7 @@ class PatternSearch:
         best_policy = policy
 
         for _ in range(n_rounds):
-            new_score, new_policy = self.search_once(best_score, best_policy, improv_eps=improv_eps)
+            new_score, new_policy = self.search_once(best_score, best_policy, improv_eps=improv_eps, eval_config=self.eval_config)
             if new_score > best_score + improv_eps:
                 best_score = new_score
                 best_policy = new_policy
