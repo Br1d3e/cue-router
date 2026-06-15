@@ -1,5 +1,6 @@
 import numpy as np
 import pooltool as pt
+from scipy.stats import qmc
 
 try:
     from ..action import ShotAction
@@ -62,7 +63,7 @@ class StochasticSearch:
         side_index = rng.choice(len(cls.SIDE_SEEDS), size)
         return cls.SIDE_SEEDS[side_index]
 
-    def search(self, max_iterations=1200):
+    def search(self, max_iterations=1200, sample_mode="random"):
         target_ball = self.shot.balls.get(self.target_ball_id)
         cue_ball = self.shot.balls.get(self.shot.cue.cue_ball_id)
 
@@ -70,6 +71,13 @@ class StochasticSearch:
             raise KeyError(f"target ball not found: {self.target_ball_id}")
         if cue_ball is None:
             raise KeyError(f"cue ball not found: {self.shot.cue.cue_ball_id}")
+
+        if sample_mode not in ["random", "LHS"]:
+            raise ValueError(f"Invalid sample_mode, {sample_mode!r}.")
+        if sample_mode == "random":
+            sampler = self.random_sample
+        else:
+            sampler = self.LHS_5d
 
         target_ball_pos = target_ball.xyz[:2]
         cue_ball_pos = cue_ball.xyz[:2]
@@ -79,61 +87,16 @@ class StochasticSearch:
                   f"| target_pocket: {self.target_pocket_id}")
             return np.asarray([], dtype=float), np.asarray([], dtype=object)
 
+
         scores = []
         policies = []
 
-        # family_spins = self.choose_spin_family(16)
-        # v0_values = self.uniform(1, 5, 8)
-        # v0_values = self.V0_VALUES
-
-        # it_count = 0
-        #
-        # for spin in family_spins:
-        #     a0, b0 = spin
-        #     a = a0 + self.normal(0, 0.1)
-        #     b = b0 + self.normal(0, 0.1)
-        #
-        #     phi_offsets = self.uniform(-7, 7, 10)
-        #     for V0 in v0_values:
-        #         for d_phi in phi_offsets:
-        #             if it_count > max_iterations:
-        #                 self.scores = np.asarray(scores, dtype=float)
-        #                 self.policies = np.asarray(policies, dtype=object)
-        #                 return self.scores, self.policies
-        #             phi = phi0 + d_phi
-        #             policy = ShotAction(phi, V0, a, b)
-        #
-        #             new_shot = self.shot.copy()
-        #             new_shot.cue.set_state(V0=V0, a=a, b=b, phi=phi, theta=0.0)
-        #
-        #             self.evaluator.evaluate_shot_strict(
-        #                 new_shot,
-        #                 self.target_ball_id,
-        #                 self.target_pocket_id,
-        #                 self.target_rect
-        #             )
-        #             score = self.evaluator.score
-        #
-        #             scores.append(score)
-        #             policies.append(policy)
-        #
-        #             it_count += 1
-
         for i in range(max_iterations):
-            spin = self.rng.choice(self.SIDE_SEEDS)
-            a0, b0 = spin
-            a = a0 + self.rng.normal(0, 0.1)
-            b = b0 + self.rng.normal(0, 0.1)
-            if not ShotAction.is_spin_possible(a, b):
+            sample = sampler()
+            if sample is None:
                 continue
-
-            phi_offset = self.rng.uniform(-8, 8)
+            phi_offset, V0, a, b = sample
             phi = phi0 + phi_offset
-
-            if self.rng.random() < 0.7:
-                V0 = self.rng.choice([1.5, 2.5, 3.5, 4.5])
-            else:
-                V0 = self.rng.uniform(1.0, 5.0)
 
             policy = ShotAction(phi, V0, a, b)
             new_shot = self.shot.copy()
@@ -153,3 +116,56 @@ class StochasticSearch:
         self.scores = np.asarray(scores, dtype=float)
         self.policies = np.asarray(policies, dtype=object)
         return self.scores, self.policies
+
+
+    def random_sample(self):
+        spin = self.rng.choice(self.SIDE_SEEDS)
+        a0, b0 = spin
+        a = a0 + self.rng.normal(0, 0.1)
+        b = b0 + self.rng.normal(0, 0.1)
+        if not ShotAction.is_spin_possible(a, b):
+            return None
+
+        phi_offset = self.rng.uniform(-8, 8)
+
+        if self.rng.random() < 0.7:
+            V0 = self.rng.choice([1.5, 2.5, 3.5, 4.5])
+        else:
+            V0 = self.rng.uniform(1.0, 5.0)
+
+        return phi_offset, V0, a, b
+
+    def LHS(self):
+        spin = self.rng.choice(self.SIDE_SEEDS)
+        a0, b0 = spin
+        sampler = qmc.LatinHypercube(d=4, optimization="random-cd", rng=self.rng)
+        sample = sampler.random(n=1)
+        l_bounds = [-8, 1, -0.1, -0.1]
+        u_bounds = [8, 5, 0.1, 0.1]
+        scaled_sample = qmc.scale(sample, l_bounds, u_bounds).flatten()
+
+        phi_offset, V0, d_a, d_b = scaled_sample
+        a = a0 + d_a
+        b = b0 + d_b
+        if not ShotAction.is_spin_possible(a, b):
+            return None
+
+        return phi_offset, V0, a, b
+
+    def LHS_5d(self):
+        sampler = qmc.LatinHypercube(d=5, optimization="random-cd", rng=self.rng)
+        sample = sampler.random(n=1)
+        l_bounds = [-8, 1, 0, -0.1, -0.1]
+        u_bounds = [8, 5, 9, 0.1, 0.1]
+        scaled_sample = qmc.scale(sample, l_bounds, u_bounds).flatten()
+
+        phi_offset, V0, spin_family_idx, d_a, d_b = scaled_sample
+        spin_family_idx = int(np.floor(spin_family_idx))
+        spin = self.SIDE_SEEDS[spin_family_idx]
+        a0, b0 = spin
+        a = a0 + d_a
+        b = b0 + d_b
+        if not ShotAction.is_spin_possible(a, b):
+            return None
+
+        return phi_offset, V0, a, b

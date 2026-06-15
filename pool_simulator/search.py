@@ -43,6 +43,7 @@ class SearchConfig:
     quick_mode: str = "grid"
     n_rounds: int = PatternSearch.MAX_SEARCHES
     stochastic_max_iter: int = 1200
+    sample_mode: str = "random"
     seed: int = 42
 
     def __repr__(self):
@@ -54,6 +55,7 @@ class SearchConfig:
                 f"  quick_mode={self.quick_mode}, \n"
                 f"  n_rounds={self.n_rounds}, \n"
                 f"  stochastic_max_iter={self.stochastic_max_iter}, \n"
+                f"  sample_mode={self.sample_mode}, \n"
                 f"  seed={self.seed}, \n"
                 f")")
 
@@ -183,7 +185,7 @@ class PolicySearch:
         target_cushion_k=1.2,
         cue_action_k=1.4,
         cue_route_corner_k=0.3,
-        cue_route_collision_k=0.4,
+        cue_route_collision_k=0.8,
         cue_route_cushion_k=0.005,
         near_miss_k=30.0,
         near_miss_limit=0.15,
@@ -209,7 +211,8 @@ class PolicySearch:
 
         seed = search_config.seed if search_config else 42
         max_iter = search_config.stochastic_max_iter if search_config else 1200
-        scores, policies = StochasticSearch(self.search_request, eval_config, seed=seed).search(max_iter)
+        sample_mode = search_config.sample_mode if search_config else "random"
+        scores, policies = StochasticSearch(self.search_request, eval_config, seed=seed).search(max_iter, sample_mode)
         return self._format_result(
             ScoresHelper.top_k_scores(scores, policies, k, rough_unique=True),
             ScoresHelper.top_k_policies(scores, policies, k, rough_unique=True),
@@ -225,7 +228,9 @@ class PolicySearch:
         else:
             seed = search_config.seed if search_config else 42
             max_iter = search_config.stochastic_max_iter if search_config else 1200
-            top_scores, top_policies = self._top_k_from_stochastic(k, eval_config=eval_config, max_iter=max_iter, seed=seed)
+            sample_mode = search_config.sample_mode if search_config else "random"
+            top_scores, top_policies = self._top_k_from_stochastic(k, eval_config=eval_config, max_iter=max_iter,
+                                                                   sample_mode=sample_mode, seed=seed)
         pattern_search = PatternSearch(self.search_request, eval_config)
 
         refined_scores = []
@@ -269,8 +274,8 @@ class PolicySearch:
         scores, policies = GridSearch(self.search_request, eval_config=eval_config).search()
         return ScoresHelper.top_k_scores(scores, policies, k), ScoresHelper.top_k_policies(scores, policies, k)
 
-    def _top_k_from_stochastic(self, k, max_iter=None, eval_config=None, seed=42):
-        scores, policies = StochasticSearch(self.search_request, eval_config=eval_config, seed=seed).search(max_iter)
+    def _top_k_from_stochastic(self, k, max_iter=None, sample_mode=None, seed=42, eval_config=None,):
+        scores, policies = StochasticSearch(self.search_request, eval_config=eval_config, seed=seed).search(max_iter, sample_mode)
         return (ScoresHelper.top_k_scores(scores, policies, k, rough_unique=True),
                 ScoresHelper.top_k_policies(scores, policies, k, rough_unique=True))
 

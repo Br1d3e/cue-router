@@ -9,8 +9,7 @@ from evaluation import ShotEvaluation, ShotScoreConfig
 
 
 chinese_table = ChineseTableSpecs.chinese_table
-USE_VISUAL_SELECTOR = True
-USE_QUICK_SEARCH = False
+USE_VISUAL_SELECTOR = False
 TOP_K = 5
 SEARCH_ROUNDS = 3
 
@@ -19,9 +18,10 @@ SEARCH_CONFIG = SearchConfig(
     search_k=15,
     refine_k=10,
     precise=True,
-    quick_mode="grid",
+    quick_mode="stochastic",
     n_rounds=3,
     stochastic_max_iter=800,
+    sample_mode="LHS",
     seed=42,
 )
 
@@ -29,12 +29,12 @@ def manual_layout():
     x1, y1 = 0.2, 0.2
     x2, y2 = 0.3, 0.3
     return PoolLayout(
-        cue_ball_pos=(0.5, 1.15),
-        target_ball_pos=(1, 1.27),
+        cue_ball_pos=(0.3230, 0.94388),
+        target_ball_pos=(0.6690, 0.4355),
         target_ball_id="1",
         other_balls_info=None,
-        target_pocket_id="rc",
-        target_rect=Rect(x1, y1, x2, y2),
+        target_pocket_id="rb",
+        target_rect=Rect(0.966442569406641, 0.9924006532389773, 1.1731654872074029, 1.258187261839957)
     )
 
 
@@ -52,6 +52,7 @@ def build_search_request(layout: PoolLayout):
 
 def main():
     layout = select_pool_layout() if USE_VISUAL_SELECTOR else manual_layout()
+    print("Pool layout: \n", layout)
     if layout is None:
         raise RuntimeError("No pool layout selected.")
 

@@ -41,7 +41,7 @@ class ShotAction:
         print(f"phi: {phi}, V0: {V0}, a: {a}, b: {b}")
 
     @staticmethod
-    def is_spin_possible(a, b, limit=0.6875):
+    def is_spin_possible(a, b, limit=0.650):
         return a * a + b * b < limit * limit
 
     @staticmethod
