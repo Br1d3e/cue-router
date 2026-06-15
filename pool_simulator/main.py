@@ -2,7 +2,7 @@ import pooltool as pt
 import numpy as np
 
 from table import ChineseTableSpecs
-from search import PolicySearch, SearchRequest
+from search import PolicySearch, SearchRequest, SearchConfig
 from geometry import Rect
 from visual import PoolLayout, select_pool_layout
 from evaluation import ShotEvaluation, ShotScoreConfig
@@ -10,10 +10,20 @@ from evaluation import ShotEvaluation, ShotScoreConfig
 
 chinese_table = ChineseTableSpecs.chinese_table
 USE_VISUAL_SELECTOR = True
-USE_QUICK_SEARCH = True
+USE_QUICK_SEARCH = False
 TOP_K = 5
-SEARCH_ROUNDS = 5
+SEARCH_ROUNDS = 3
 
+SEARCH_CONFIG = SearchConfig(
+    display_k=TOP_K,
+    search_k=15,
+    refine_k=10,
+    precise=True,
+    quick_mode="grid",
+    n_rounds=3,
+    stochastic_max_iter=800,
+    seed=42,
+)
 
 def manual_layout():
     x1, y1 = 0.2, 0.2
@@ -51,9 +61,7 @@ def main():
     import time
     b4 = time.time()
     top_k_scores, top_k_policies = searcher.search(
-        k=TOP_K,
-        precise=not USE_QUICK_SEARCH,
-        n_rounds=SEARCH_ROUNDS,
+        search_config=SEARCH_CONFIG,
         eval_config=None,
     )
     if TOP_K == 1:
@@ -79,9 +87,9 @@ def main():
             search_request.target_pocket_id,
             search_request.target_rect,
         )
-        if shot_evaluator.position_quality <= 0.4:
-            print(f"Skipping route: position quality={shot_evaluator.position_quality} is too low")
-            continue
+        # if shot_evaluator.position_quality <= 0.4:
+        #     print(f"Skipping route: position quality={shot_evaluator.position_quality} is too low")
+        #     continue
         shot_evaluator.print_score_breakdown()
 
         pt.simulate(top_shot, inplace=True)

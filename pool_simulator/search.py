@@ -7,11 +7,13 @@ try:
     from .geometry import Rect
     from .search_method.grid_search import GridSearch
     from .search_method.pattern_search import PatternSearch
+    from .search_method.stochastic_search import StochasticSearch
     from .evaluation import ShotScoreConfig, ShotEvaluation
 except ImportError:
     from geometry import Rect
     from search_method.grid_search import GridSearch
     from search_method.pattern_search import PatternSearch
+    from search_method.stochastic_search import StochasticSearch
     from evaluation import ShotScoreConfig, ShotEvaluation
 
 
@@ -30,6 +32,30 @@ class SearchRequest:
 
     def __iter__(self):
         return iter((self.shot, self.target_ball_id, self.target_pocket_id, self.target_rect))
+
+
+@dataclass
+class SearchConfig:
+    display_k: int = 5
+    search_k: int = 20
+    refine_k: int = 10
+    precise: bool = True
+    quick_mode: str = "grid"
+    n_rounds: int = PatternSearch.MAX_SEARCHES
+    stochastic_max_iter: int = 1200
+    seed: int = 42
+
+    def __repr__(self):
+        return (f"SearchConfig(\n"
+                f"  display_k={self.display_k}, \n"
+                f"  search_k={self.search_k}, \n"
+                f"  refine_k={self.refine_k}, \n"
+                f"  precise={self.precise}, \n"
+                f"  quick_mode={self.quick_mode}, \n"
+                f"  n_rounds={self.n_rounds}, \n"
+                f"  stochastic_max_iter={self.stochastic_max_iter}, \n"
+                f"  seed={self.seed}, \n"
+                f")")
 
 
 class ScoresHelper:
@@ -79,13 +105,34 @@ class ScoresHelper:
         return np.asarray(idx, dtype=int)
 
     @staticmethod
-    def top_k_scores(scores, policies, k):
+    def top_k_rough_unique_idx(scores, policies, k=1):
         scores = ScoresHelper._scores_np(scores)
+        policies = ScoresHelper._policies_np(policies)
+        if scores.size == 0:
+            return np.asarray([], dtype=int)
+
+        idx = []
+        for i in np.argsort(scores)[::-1]:
+            if any(policies[j].rough_equal(policies[i]) for j in idx):
+                continue
+            idx.append(i)
+            if len(idx) == k:
+                break
+
+        return np.asarray(idx, dtype=int)
+
+    @staticmethod
+    def top_k_scores(scores, policies, k, rough_unique=False):
+        scores = ScoresHelper._scores_np(scores)
+        if rough_unique:
+            return scores[ScoresHelper.top_k_rough_unique_idx(scores, policies, k)]
         return scores[ScoresHelper.top_k_unique_idx(scores, policies, k)]
 
     @staticmethod
-    def top_k_policies(scores, policies, k):
+    def top_k_policies(scores, policies, k, rough_unique=False):
         policies = ScoresHelper._policies_np(policies)
+        if rough_unique:
+            return policies[ScoresHelper.top_k_rough_unique_idx(scores, policies, k)]
         return policies[ScoresHelper.top_k_unique_idx(scores, policies, k)]
 
     @staticmethod
@@ -131,7 +178,7 @@ class ScoresHelper:
 
 class PolicySearch:
     EVAL_CONFIG = ShotScoreConfig(
-        position_k=1.5,
+        position_k=2.0,
         target_collision_k=1.1,
         target_cushion_k=1.2,
         cue_action_k=1.4,
@@ -140,7 +187,7 @@ class PolicySearch:
         cue_route_cushion_k=0.005,
         near_miss_k=30.0,
         near_miss_limit=0.15,
-        robustness_weight=0.2,
+        robustness_weight=0.15,
         noise_n_samples=16,
         noise_scales=(0.2, 0.5, 0.1, 0.1),
         noise_max_attempts=128,
@@ -149,16 +196,36 @@ class PolicySearch:
     def __init__(self, search_request: SearchRequest):
         self.search_request = search_request
 
-    def quick_search(self, k=5, eval_config=None):
-        scores, policies = GridSearch(self.search_request, eval_config=eval_config).search()
+    def quick_search(self, k=5, mode="grid", search_config=None, eval_config=None):
+        if mode not in ["grid", "stochastic"]:
+            raise ValueError(f"Invalid quick_search mode, {mode!r}")
+        if mode == "grid":
+            scores, policies = GridSearch(self.search_request, eval_config=eval_config).search()
+            return self._format_result(
+                ScoresHelper.top_k_scores(scores, policies, k),
+                ScoresHelper.top_k_policies(scores, policies, k),
+                k,
+            )
+
+        seed = search_config.seed if search_config else 42
+        max_iter = search_config.stochastic_max_iter if search_config else 1200
+        scores, policies = StochasticSearch(self.search_request, eval_config, seed=seed).search(max_iter)
         return self._format_result(
-            ScoresHelper.top_k_scores(scores, policies, k),
-            ScoresHelper.top_k_policies(scores, policies, k),
+            ScoresHelper.top_k_scores(scores, policies, k, rough_unique=True),
+            ScoresHelper.top_k_policies(scores, policies, k, rough_unique=True),
             k,
         )
 
-    def precise_search(self, k=5, n_rounds=PatternSearch.MAX_SEARCHES, eval_config=None):
-        top_scores, top_policies = self._top_k_from_grid(k, eval_config=eval_config)
+    def precise_search(self, k=5, n_rounds=PatternSearch.MAX_SEARCHES, quick_mode="grid",
+                       search_config=None, eval_config=None):
+        if quick_mode not in ["grid", "stochastic"]:
+            raise ValueError(f"Invalid quick_search mode, {quick_mode!r}")
+        if quick_mode == "grid":
+            top_scores, top_policies = self._top_k_from_grid(k, eval_config=eval_config)
+        else:
+            seed = search_config.seed if search_config else 42
+            max_iter = search_config.stochastic_max_iter if search_config else 1200
+            top_scores, top_policies = self._top_k_from_stochastic(k, eval_config=eval_config, max_iter=max_iter, seed=seed)
         pattern_search = PatternSearch(self.search_request, eval_config)
 
         refined_scores = []
@@ -175,16 +242,25 @@ class PolicySearch:
         )
 
 
-    def search(self, k=5, precise=True, n_rounds=PatternSearch.MAX_SEARCHES, eval_config=None):
+    def search(self, search_config: SearchConfig, eval_config=None):
+        display_k = search_config.display_k
+        search_k = search_config.search_k
+        refine_k = search_config.refine_k
+        precise = search_config.precise
+        n_rounds = search_config.n_rounds
+        quick_mode = search_config.quick_mode
+
         if eval_config is None:
             eval_config = self.EVAL_CONFIG
         if precise:
-            search_results = self.precise_search(k=k, n_rounds=n_rounds, eval_config=eval_config)
+            search_results = self.precise_search(k=refine_k, n_rounds=n_rounds, quick_mode=quick_mode,
+                                                 search_config=search_config, eval_config=eval_config)
         else:
-            search_results = self.quick_search(k=k, eval_config=eval_config)
+            search_results = self.quick_search(k=search_k, mode=quick_mode,
+                                               search_config=search_config, eval_config=eval_config)
         search_results = self.top_k_rerank_by_robustness(
             search_results,
-            k,
+            display_k,
             eval_config=eval_config,
         )
         return search_results
@@ -192,6 +268,11 @@ class PolicySearch:
     def _top_k_from_grid(self, k, eval_config=None):
         scores, policies = GridSearch(self.search_request, eval_config=eval_config).search()
         return ScoresHelper.top_k_scores(scores, policies, k), ScoresHelper.top_k_policies(scores, policies, k)
+
+    def _top_k_from_stochastic(self, k, max_iter=None, eval_config=None, seed=42):
+        scores, policies = StochasticSearch(self.search_request, eval_config=eval_config, seed=seed).search(max_iter)
+        return (ScoresHelper.top_k_scores(scores, policies, k, rough_unique=True),
+                ScoresHelper.top_k_policies(scores, policies, k, rough_unique=True))
 
     def top_k_rerank_by_robustness(self, search_results, k=5, eval_config=None):
         if eval_config is None:

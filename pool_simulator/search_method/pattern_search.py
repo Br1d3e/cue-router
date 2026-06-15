@@ -61,6 +61,8 @@ class PatternSearch:
         best_policy = policy
         phi, V0, a, b = policy.as_array()
 
+        shot_evaluator = ShotEvaluation(config=eval_config)
+
         for direction in directions:
             direction = np.asarray(direction)
             d_phi, d_V0, d_a, d_b = direction * step
@@ -77,8 +79,7 @@ class PatternSearch:
             new_shot = self.shot.copy()
             new_shot.cue.set_state(V0=new_V0, a=new_a, b=new_b, phi=new_phi, theta=0.0)
 
-            shot_evaluator = ShotEvaluation(config=eval_config)
-            new_score = shot_evaluator.evaluate_shot_strict(
+            new_score = shot_evaluator.evaluate_shot_norm(
                 new_shot,
                 self.target_ball_id,
                 self.target_pocket_id,

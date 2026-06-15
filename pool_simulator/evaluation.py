@@ -364,7 +364,7 @@ class ShotEvaluation:
             new_shot.cue.set_state(V0=new_V0, phi=new_phi, a=new_a, b=new_b)
             pt.simulate(new_shot, inplace=True, continuous=False)
             if (pt.ruleset.get_id_of_first_ball_hit(new_shot) != target_id or
-                    pt.ruleset.is_ball_pocketed(shot, "cue")):
+                    pt.ruleset.is_ball_pocketed(new_shot, "cue")):
                 continue
             quality = (
                     self.get_position_quality(new_shot, target_rect, strict_mode=True, k=config.position_k)

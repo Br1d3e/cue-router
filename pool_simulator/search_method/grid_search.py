@@ -14,18 +14,18 @@ except ImportError:
 class GridSearch:
     SIDE_SEEDS = [
         (0.0, 0.0),  # stun
-        (0.0, 0.5),  # follow
-        (0.0, -0.5),  # screw
-        (-0.5, 0.0),  # right
-        (0.5, 0.0),  # left
-        (-0.4, 0.4),  # right follow
-        (0.4, 0.4),  # left follow
-        (-0.4, -0.4),  # right draw
-        (0.4, -0.4),  # left draw
+        (0.0, 0.4),  # follow
+        (0.0, -0.4),  # screw
+        (-0.4, 0.0),  # right
+        (0.4, 0.0),  # left
+        (-0.3, 0.3),  # right follow
+        (0.3, 0.3),  # left follow
+        (-0.3, -0.3),  # right draw
+        (0.3, -0.3),  # left draw
     ]
 
-    V0_VALUES = [1.5, 3.0, 4.5]
-    PHI_OFFSETS = np.linspace(-8, 8, num=1 + 8 * 4)
+    V0_VALUES = [1.5, 2.5, 3.5]
+    PHI_OFFSETS = np.linspace(-7, 7, num=1 + 7 * 8)
 
     EVAL_CONFIG = ShotScoreConfig(
         position_k=2.0,
@@ -68,6 +68,7 @@ class GridSearch:
 
         scores = []
         policies = []
+        shot_evaluator = ShotEvaluation(config=eval_config)
 
         for a, b in side_seeds:
             for V0 in v0_values:
@@ -77,7 +78,6 @@ class GridSearch:
                     new_shot = shot.copy()
                     new_shot.cue.set_state(V0=V0, a=a, b=b, phi=phi, theta=0.0)
 
-                    shot_evaluator = ShotEvaluation(config=eval_config)
                     score = shot_evaluator.evaluate_shot_strict(new_shot, target_ball_id, target_pocket_id, target_rect)
                     scores.append(score)
                     policies.append(ShotAction(phi, V0, a, b))

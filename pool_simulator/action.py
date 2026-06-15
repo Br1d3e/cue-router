@@ -20,6 +20,16 @@ class ShotAction:
             return False
         return (self.phi, self.V0, self.a, self.b) == (other.phi, other.V0, other.a, other.b)
 
+    def rough_equal(self, other):
+        if not isinstance(other, ShotAction):
+            return False
+        return (
+            (-1 <= self.phi - other.phi <= 1) and
+            (-0.5 < self.V0 - other.V0 < 0.5) and
+            (-0.15 < self.a - other.a < 0.15) and
+            (-0.15 < self.b - other.b < 0.15)
+        )
+
     @staticmethod
     def pretty_print_policy(policy):
         if isinstance(policy, ShotAction):
