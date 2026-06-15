@@ -9,7 +9,7 @@ from evaluation import ShotEvaluation, ShotScoreConfig
 
 
 chinese_table = ChineseTableSpecs.chinese_table
-USE_VISUAL_SELECTOR = False
+USE_VISUAL_SELECTOR = True
 TOP_K = 5
 SEARCH_ROUNDS = 3
 
@@ -20,7 +20,7 @@ SEARCH_CONFIG = SearchConfig(
     precise=True,
     quick_mode="stochastic",
     n_rounds=3,
-    stochastic_max_iter=800,
+    stochastic_max_iter=500,
     sample_mode="LHS",
     seed=42,
 )
@@ -34,7 +34,7 @@ def manual_layout():
         target_ball_id="1",
         other_balls_info=None,
         target_pocket_id="rb",
-        target_rect=Rect(0.966442569406641, 0.9924006532389773, 1.1731654872074029, 1.258187261839957)
+        target_region=Rect(0.966442569406641, 0.9924006532389773, 1.1731654872074029, 1.258187261839957)
     )
 
 
@@ -46,7 +46,7 @@ def build_search_request(layout: PoolLayout):
         shot=shot,
         target_ball_id=layout.target_ball_id,
         target_pocket_id=layout.target_pocket_id,
-        target_rect=layout.target_rect,
+        target_region=layout.target_region,
     )
 
 
@@ -86,7 +86,7 @@ def main():
             top_shot,
             search_request.target_ball_id,
             search_request.target_pocket_id,
-            search_request.target_rect,
+            search_request.target_region,
         )
         # if shot_evaluator.position_quality <= 0.4:
         #     print(f"Skipping route: position quality={shot_evaluator.position_quality} is too low")

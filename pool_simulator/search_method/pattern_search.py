@@ -51,7 +51,7 @@ class PatternSearch:
         self.shot = search_request.shot
         self.target_ball_id = search_request.target_ball_id
         self.target_pocket_id = search_request.target_pocket_id
-        self.target_rect = search_request.target_rect
+        self.target_rect = search_request.target_region
         self.eval_config = eval_config
 
     def search_once(self, init_score, policy: ShotAction, directions=DIRECTIONS,

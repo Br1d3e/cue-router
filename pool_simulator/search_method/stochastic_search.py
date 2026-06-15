@@ -50,7 +50,7 @@ class StochasticSearch:
         self.shot = search_request.shot
         self.target_ball_id = search_request.target_ball_id
         self.target_pocket_id = search_request.target_pocket_id
-        self.target_rect = search_request.target_rect
+        self.target_rect = search_request.target_region
         self.scores = np.asarray([], dtype=float)
         self.policies = np.asarray([], dtype=object)
         self.rng = np.random.default_rng(seed)

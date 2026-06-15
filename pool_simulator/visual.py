@@ -3,14 +3,15 @@ import textwrap
 
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle, Rectangle, Wedge
+from matplotlib.lines import Line2D
 import numpy as np
 import pooltool as pt
 
 try:
-    from .geometry import Rect
+    from .geometry import Rect, PositionTarget, LineSegment
     from .table import ChineseTableSpecs
 except ImportError:
-    from geometry import Rect
+    from geometry import Rect, PositionTarget, LineSegment
     from table import ChineseTableSpecs
 
 
@@ -21,7 +22,7 @@ class PoolLayout:
     target_ball_id: str
     other_balls_info: None | dict[str, tuple[float, float]]
     target_pocket_id: str
-    target_rect: Rect
+    target_region: PositionTarget
 
     def get_balls(self):
         balls = {
@@ -64,6 +65,10 @@ BALL_COLORS = {
     "13": ("white", "darkorange"),
     "14": ("white", "deeppink"),
     "15": ("white", "indigo"),
+}
+REGION_KEY_MAP = {
+    "a": Rect,
+    "b": LineSegment
 }
 MODE_SEQUENCE = ["cue_ball", "target_ball", "pocket", "other_balls", "target_region"]
 
@@ -179,7 +184,8 @@ class SearchRequestSelector:
         self.target_pocket_id = None
         self.other_balls_info = {}
         self.target_region_points = []
-        self.target_rect = None
+        self.region_mode = None
+        self.target_region = None
         self.layout = None
 
         self.pending_ball_pos = None
@@ -207,7 +213,7 @@ class SearchRequestSelector:
             "target_ball": "Click target ball position, then press 1-9 or QWERTY for 10-15.",
             "pocket": "Click one grey pocket wedge.",
             "other_balls": "Optional: click a ball position, then press 1-9 or QWERTY. Press esc/enter to continue.",
-            "target_region": "Click two opposite corners of the target rectangle.",
+            "target_region": "Choose a target region mode: rectangle (A) or line (B). Then click two opposite corners of the target region.",
         }
         suffix = f" {extra}" if extra else ""
         self.help_text.set_text(textwrap.fill(help_by_mode[self.current_mode] + suffix, HELP_WRAP_WIDTH))
@@ -242,7 +248,7 @@ class SearchRequestSelector:
             self.other_balls_info.clear()
         elif self.current_mode == "target_region":
             self.target_region_points.clear()
-            self.target_rect = None
+            self.target_region = None
             self.layout = None
 
         if self.mode_history:
@@ -289,6 +295,9 @@ class SearchRequestSelector:
             self.pending_ball_role = "other"
             self.update_text("Now press other ball id, or esc/enter to finish optional balls.")
         elif self.current_mode == "target_region":
+            if not self.region_mode:
+                self.update_text("Select a target region mode first. A is rect, B is line.")
+                return
             self.target_region_points.append(pos_table)
             marker = Circle(pos_plot, 0.035, facecolor="red", edgecolor="black")
             self.ax.add_patch(marker)
@@ -296,7 +305,7 @@ class SearchRequestSelector:
             if len(self.target_region_points) == 2:
                 self.finish_target_region()
             else:
-                self.update_text("Click the opposite rectangle corner.")
+                self.update_text("Click the opposite rectangle/line corner.")
 
     def on_pick(self, event):
         if self.current_mode != "pocket":
@@ -319,6 +328,16 @@ class SearchRequestSelector:
             self.advance_mode()
             return
 
+        if self.current_mode == "target_region":
+            region_cls = REGION_KEY_MAP.get(key)
+            if region_cls is None:
+                self.update_text("Unsupported key. Use A for rectangle or B for line.")
+                return
+            self.region_mode = region_cls
+            self.target_region_points.clear()
+            self.update_text(f"Region mode: {region_cls.__name__}. Click two points.")
+            return
+
         if self.current_mode not in {"target_ball", "other_balls"}:
             return
         if self.pending_ball_pos is None:
@@ -339,7 +358,7 @@ class SearchRequestSelector:
             self.pending_ball_pos = None
             self.pending_ball_role = None
             self.advance_mode()
-        else:
+        elif self.current_mode == "other_balls":
             if ball_id == self.target_ball_id:
                 self.update_text("That id is already used by the target ball.")
                 return
@@ -352,18 +371,30 @@ class SearchRequestSelector:
             self.pending_ball_role = None
             self.update_text("Added. Click another ball or press esc/enter to continue.")
 
+
     def finish_target_region(self):
         (x1, y1), (x2, y2) = self.target_region_points
-        self.target_rect = Rect(x1, y1, x2, y2)
 
-        p1 = table_to_plot((self.target_rect.xmin, self.target_rect.ymin))
-        p2 = table_to_plot((self.target_rect.xmax, self.target_rect.ymax))
-        xy = (min(p1[0], p2[0]), min(p1[1], p2[1]))
-        width = abs(p2[0] - p1[0])
-        height = abs(p2[1] - p1[1])
-        rect_patch = Rectangle(xy, width, height, facecolor="none", edgecolor="red", linewidth=1.5)
-        self.ax.add_patch(rect_patch)
-        self.add_mode_artist(rect_patch)
+        if self.region_mode == Rect:
+            self.target_region = Rect(x1, y1, x2, y2)
+
+            p1 = table_to_plot((self.target_region.xmin, self.target_region.ymin))
+            p2 = table_to_plot((self.target_region.xmax, self.target_region.ymax))
+            xy = (min(p1[0], p2[0]), min(p1[1], p2[1]))
+            width = abs(p2[0] - p1[0])
+            height = abs(p2[1] - p1[1])
+            rect_patch = Rectangle(xy, width, height, facecolor="none", edgecolor="red", linewidth=1.5)
+            self.ax.add_patch(rect_patch)
+            self.add_mode_artist(rect_patch)
+        elif self.region_mode == LineSegment:
+            self.target_region = LineSegment(x1, y1, x2, y2)
+            p1 = table_to_plot((x1, y1))
+            p2 = table_to_plot((x2, y2))
+            x = (p1[0], p2[0])
+            y = (p1[1], p2[1])
+            line = Line2D(x, y, color="red", linewidth=2)
+            self.ax.add_line(line)
+            self.add_mode_artist(line)
 
         self.layout = PoolLayout(
             cue_ball_pos=self.cue_ball_pos,
@@ -371,7 +402,7 @@ class SearchRequestSelector:
             target_ball_id=self.target_ball_id,
             other_balls_info=self.other_balls_info or None,
             target_pocket_id=self.target_pocket_id,
-            target_rect=self.target_rect,
+            target_region=self.target_region,
         )
         self.update_text("Selection complete. Close this window to continue.")
 

@@ -4,13 +4,13 @@ import numpy as np
 import pooltool as pt
 
 try:
-    from .geometry import Rect
+    from .geometry import PositionTarget, Rect, LineSegment
     from .search_method.grid_search import GridSearch
     from .search_method.pattern_search import PatternSearch
     from .search_method.stochastic_search import StochasticSearch
     from .evaluation import ShotScoreConfig, ShotEvaluation
 except ImportError:
-    from geometry import Rect
+    from geometry import Rect, PositionTarget, LineSegment
     from search_method.grid_search import GridSearch
     from search_method.pattern_search import PatternSearch
     from search_method.stochastic_search import StochasticSearch
@@ -22,16 +22,16 @@ class SearchRequest:
     shot: pt.System
     target_ball_id: str
     target_pocket_id: str
-    target_rect: Rect
+    target_region: PositionTarget
 
     def __repr__(self):
         return (f"SearchRequest(shot: {self.shot}, "
                 f"target_ball_id: {self.target_ball_id}, "
                 f"target_pocket_id: {self.target_pocket_id}, "
-                f"target_rect: {self.target_rect})")
+                f"target_region: {self.target_region})")
 
     def __iter__(self):
-        return iter((self.shot, self.target_ball_id, self.target_pocket_id, self.target_rect))
+        return iter((self.shot, self.target_ball_id, self.target_pocket_id, self.target_region))
 
 
 @dataclass
@@ -180,7 +180,7 @@ class ScoresHelper:
 
 class PolicySearch:
     EVAL_CONFIG = ShotScoreConfig(
-        position_k=2.0,
+        position_k=5.0,
         target_collision_k=1.1,
         target_cushion_k=1.2,
         cue_action_k=1.4,
@@ -191,7 +191,7 @@ class PolicySearch:
         near_miss_limit=0.15,
         robustness_weight=0.15,
         noise_n_samples=16,
-        noise_scales=(0.2, 0.5, 0.1, 0.1),
+        noise_scales=(0.2, 0.5, 0.08, 0.08),
         noise_max_attempts=128,
     )
 
@@ -299,7 +299,7 @@ class PolicySearch:
                 top_shot,
                 self.search_request.target_ball_id,
                 self.search_request.target_pocket_id,
-                self.search_request.target_rect,
+                self.search_request.target_region,
                 config=eval_config
             )
             final_scores.append(new_score)

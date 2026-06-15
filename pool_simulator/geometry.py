@@ -6,9 +6,12 @@ try:
 except ImportError:
     from table import ChineseTableSpecs
 
+class PositionTarget:
+    def position_quality(self, xy, position_k):
+        ...
 
 @dataclass(order=True)
-class Rect:
+class Rect(PositionTarget):
     x1: float
     y1: float
     x2: float
@@ -57,6 +60,53 @@ class Rect:
         dy = abs(y_mid - y)
 
         return (dx * dx + dy * dy) ** 0.5
+
+    def position_quality(self, xy, position_k):
+        if self.contains(xy):
+            return 1.0
+        return 1 / (1 + position_k * self.distance_to(xy))
+
+
+@dataclass(order=True)
+class LineSegment(PositionTarget):
+    x1: float
+    y1: float
+    x2: float
+    y2: float
+
+    dx: float = field(init=False, compare=False)
+    dy: float = field(init=False, compare=False)
+    length_sq: float = field(init=False, compare=False)
+
+    def __post_init__(self):
+        self.dx = self.x2 - self.x1
+        self.dy = self.y2 - self.y1
+        self.length_sq = self.dx * self.dx + self.dy * self.dy
+        self.x = (self.x1, self.x2)
+        self.y = (self.y1, self.y2)
+
+    def __repr__(self):
+        return f"LineSegment(({self.x1}, {self.y1}), ({self.x2}, {self.y2}))"
+
+    def distance_to(self, xy):
+        x, y = xy
+        if self.length_sq == 0:
+            return ((x - self.x1) ** 2 + (y - self.y1) ** 2) ** 0.5
+
+        t = ((x - self.x1) * self.dx + (y - self.y1) * self.dy) / self.length_sq
+        t = min(max(t, 0.0), 1.0)
+        closest_x = self.x1 + t * self.dx
+        closest_y = self.y1 + t * self.dy
+        return ((x - closest_x) ** 2 + (y - closest_y) ** 2) ** 0.5
+
+    def contains(self, xy):
+        return self.distance_to(xy) <= 0.05
+
+    def position_quality(self, xy, position_k):
+        distance = self.distance_to(xy)
+        if self.contains(xy):
+            return 1.0
+        return 1 / (1 + position_k * distance)
 
 
 class Geometry:

@@ -283,16 +283,11 @@ class ShotEvaluation:
             raise TypeError(f"action must be type of ShotAction(phi, V0, a, b), got {action!r} instead.")
         return action.as_array() + action_noises
 
-    def get_position_quality(self, shot: pt.System, target_rect, strict_mode, k: float = 10.0) -> float:
+    def get_position_quality(self, shot: pt.System, target_region, k: float = 10.0) -> float:
         if k is None:
             k = 10.0
         cb_xy = shot.balls.get(shot.cue.cue_ball_id).xyz[:2]
-        if target_rect.contains(cb_xy):
-            return 1.0
-
-        if strict_mode:
-            return 1 / (1 + k * target_rect.distance_to_center(cb_xy))
-        return 1 / (1 + k * target_rect.distance_to(cb_xy))
+        return target_region.position_quality(cb_xy, position_k=k)
 
     def get_target_route_quality(self, shot: pt.System, target_id, pocket_id, k_b=0.8, k_c=1.0) -> float:
         if k_b is None:
@@ -341,7 +336,7 @@ class ShotEvaluation:
             shot: pt.System,
             target_id,
             pocket_id,
-            target_rect,
+            target_region,
             config: ShotScoreConfig = None,
     ):
         action = ShotAction(shot.cue.phi, shot.cue.V0, shot.cue.a, shot.cue.b)
@@ -355,7 +350,19 @@ class ShotEvaluation:
 
         base_shot = shot.copy()
         pt.simulate(base_shot, inplace=True, continuous=False)
-        base_position_quality = self.get_position_quality(base_shot, target_rect, strict_mode=True, k=config.position_k)
+        base_quality = (
+                self.get_position_quality(base_shot, target_region, k=config.position_k)
+                * self.get_cue_route_quality(
+                base_shot, target_id,
+                k_1=config.cue_route_collision_k,
+                k_2=config.cue_route_corner_k,
+                k_3=config.cue_route_cushion_k
+            ) * self.get_target_route_quality(
+                base_shot, target_id, pocket_id,
+                k_b=config.target_collision_k,
+                k_c=config.target_cushion_k
+            )
+        )
 
         qualities = []
         for ja in jittered_actions:
@@ -367,7 +374,7 @@ class ShotEvaluation:
                     pt.ruleset.is_ball_pocketed(new_shot, "cue")):
                 continue
             quality = (
-                    self.get_position_quality(new_shot, target_rect, strict_mode=True, k=config.position_k)
+                    self.get_position_quality(new_shot, target_region, k=config.position_k)
                     * self.get_cue_route_quality(
                 new_shot, target_id,
                 k_1=config.cue_route_collision_k,
@@ -381,14 +388,14 @@ class ShotEvaluation:
             )
             qualities.append(quality)
 
-        if base_score <= 0 or base_position_quality <= 0 or len(qualities) == 0:
+        if base_score <= 0 or base_quality <= 0 or len(qualities) == 0:
             self.route_robustness = 0.0
         else:
-            self.route_robustness = max(min(np.mean(qualities) / base_position_quality, 1), 0)
+            self.route_robustness = max(min(np.mean(qualities) / base_quality, 1), 0)
 
         return self.route_robustness
 
-    def evaluate_shot(self, shot: pt.System, target_id, pocket_id, target_rect,
+    def evaluate_shot(self, shot: pt.System, target_id, pocket_id, target_region,
                       strict_mode, config) -> float:
         if not isinstance(config, ShotScoreConfig):
             raise ValueError(f"config must be instance of ShotScoreConfig, got {type(config)!r} instead.")
@@ -411,7 +418,7 @@ class ShotEvaluation:
             return 0.0
         self.valid = True
 
-        self.position_quality = self.get_position_quality(shot, target_rect, strict_mode, k=position_k)
+        self.position_quality = self.get_position_quality(shot, target_region, k=position_k)
         self.target_route_quality = self.get_target_route_quality(shot, target_id, pocket_id, k_b=target_collision_k,
                                                                   k_c=target_cushion_k)
         self.cue_action_ease = self.get_cue_action_ease(shot, k=cue_action_k)
@@ -429,34 +436,34 @@ class ShotEvaluation:
 
         return self.score
 
-    def evaluate_shot_norm(self, shot: pt.System, target_id, pocket_id, target_rect, config=None):
+    def evaluate_shot_norm(self, shot: pt.System, target_id, pocket_id, target_region, config=None):
         if config is None:
             config = self.config
-        return self.evaluate_shot(shot, target_id, pocket_id, target_rect, False, config=config)
+        return self.evaluate_shot(shot, target_id, pocket_id, target_region, False, config=config)
 
-    def evaluate_shot_strict(self, shot: pt.System, target_id, pocket_id, target_rect, config=None):
+    def evaluate_shot_strict(self, shot: pt.System, target_id, pocket_id, target_region, config=None):
         if config is None:
             config = self.config
-        return self.evaluate_shot(shot, target_id, pocket_id, target_rect, strict_mode=True, config=config)
+        return self.evaluate_shot(shot, target_id, pocket_id, target_region, strict_mode=True, config=config)
 
     def evaluate_shot_final(
             self,
             shot: pt.System,
             target_id,
             pocket_id,
-            target_rect,
+            target_region,
             config: ShotScoreConfig = None,
     ):
         if config is None:
             config = self.config
         robustness_shot = shot.copy()
-        base_score = self.evaluate_shot_strict(shot, target_id, pocket_id, target_rect, config=config)
+        base_score = self.evaluate_shot_strict(shot, target_id, pocket_id, target_region, config=config)
         robustness = self.get_route_robustness(
             base_score,
             robustness_shot,
             target_id,
             pocket_id,
-            target_rect,
+            target_region,
             config=config,
         )
         self.score = base_score * (1 - config.robustness_weight + config.robustness_weight * robustness)
