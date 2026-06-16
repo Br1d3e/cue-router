@@ -51,7 +51,8 @@ class PatternSearch:
         self.shot = search_request.shot
         self.target_ball_id = search_request.target_ball_id
         self.target_pocket_id = search_request.target_pocket_id
-        self.target_rect = search_request.target_region
+        self.target_region = search_request.target_region
+        self.route_type = search_request.route_type
         self.eval_config = eval_config
 
     def search_once(self, init_score, policy: ShotAction, directions=DIRECTIONS,
@@ -79,13 +80,23 @@ class PatternSearch:
             new_shot = self.shot.copy()
             new_shot.cue.set_state(V0=new_V0, a=new_a, b=new_b, phi=new_phi, theta=0.0)
 
-            new_score = shot_evaluator.evaluate_shot_norm(
-                new_shot,
-                self.target_ball_id,
-                self.target_pocket_id,
-                self.target_rect,
-            )
-            new_policy = ShotAction(new_phi, new_V0, new_a, new_b)
+            if "bank" in self.route_type:
+                new_score = shot_evaluator.evaluate_shot_strict(
+                    new_shot,
+                    self.target_ball_id,
+                    self.target_pocket_id,
+                    self.target_region,
+                    route_type=self.route_type
+                )
+            else:
+                new_score = shot_evaluator.evaluate_shot_norm(
+                    new_shot,
+                    self.target_ball_id,
+                    self.target_pocket_id,
+                    self.target_region,
+                    route_type=self.route_type
+                )
+            new_policy = ShotAction(new_phi, new_V0, new_a, new_b, route_type=self.route_type)
 
             if new_score > best_score + improv_eps:
                 best_score = new_score

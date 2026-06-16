@@ -8,12 +8,14 @@ class ShotAction:
     V0: float = 0.0
     a: float = 0.0
     b: float = 0.0
+    route_type: str = "direct"  # “direct" | "bank"
 
     def as_array(self):
         return np.asarray((self.phi, self.V0, self.a, self.b), dtype=float)
 
     def __repr__(self):
-        return f"ShotAction(phi={self.phi:.2f}, V0={self.V0:.1f}, a={self.a:.1f}, b={self.b:.1f})"
+        return (f"ShotAction(phi={self.phi:.2f}, V0={self.V0:.1f}, a={self.a:.1f}, b={self.b:.1f}, "
+                f"route_type={self.route_type})")
 
     def __eq__(self, other):
         if not isinstance(other, ShotAction):

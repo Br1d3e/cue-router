@@ -23,6 +23,7 @@ class PoolLayout:
     other_balls_info: None | dict[str, tuple[float, float]]
     target_pocket_id: str
     target_region: PositionTarget
+    route_type: str = "direct"
 
     def get_balls(self):
         balls = {
@@ -67,10 +68,15 @@ BALL_COLORS = {
     "15": ("white", "indigo"),
 }
 REGION_KEY_MAP = {
-    "a": Rect,
-    "b": LineSegment
+    "r": Rect,
+    "l": LineSegment
 }
-MODE_SEQUENCE = ["cue_ball", "target_ball", "pocket", "other_balls", "target_region"]
+ROUTE_TYPE_DEFAULT = "direct"
+ROUTE_TYPE_KEY_MAP = {
+    "d": "direct",
+    "b": "bank",
+}
+MODE_SEQUENCE = ["cue_ball", "target_ball", "pocket", "route_type", "other_balls", "target_region"]
 
 
 def disable_conflicting_matplotlib_keys():
@@ -182,6 +188,7 @@ class SearchRequestSelector:
         self.target_ball_pos = None
         self.target_ball_id = None
         self.target_pocket_id = None
+        self.route_type = ROUTE_TYPE_DEFAULT
         self.other_balls_info = {}
         self.target_region_points = []
         self.region_mode = None
@@ -212,8 +219,9 @@ class SearchRequestSelector:
             "cue_ball": "Click on the table to place the cue ball. Press backspace/u to undo.",
             "target_ball": "Click target ball position, then press 1-9 or QWERTY for 10-15.",
             "pocket": "Click one grey pocket wedge.",
+            "route_type": "Choose route type: D for direct, B for bank. Press esc/enter to use direct.",
             "other_balls": "Optional: click a ball position, then press 1-9 or QWERTY. Press esc/enter to continue.",
-            "target_region": "Choose a target region mode: rectangle (A) or line (B). Then click two opposite corners of the target region.",
+            "target_region": "Choose a target region mode: rectangle (R) or line (L). Then click two opposite corners of the target region.",
         }
         suffix = f" {extra}" if extra else ""
         self.help_text.set_text(textwrap.fill(help_by_mode[self.current_mode] + suffix, HELP_WRAP_WIDTH))
@@ -244,6 +252,8 @@ class SearchRequestSelector:
             self.target_pocket_id = None
             for patch in self.pocket_patches.values():
                 patch.set_facecolor("grey")
+        elif self.current_mode == "route_type":
+            self.route_type = ROUTE_TYPE_DEFAULT
         elif self.current_mode == "other_balls":
             self.other_balls_info.clear()
         elif self.current_mode == "target_region":
@@ -296,7 +306,7 @@ class SearchRequestSelector:
             self.update_text("Now press other ball id, or esc/enter to finish optional balls.")
         elif self.current_mode == "target_region":
             if not self.region_mode:
-                self.update_text("Select a target region mode first. A is rect, B is line.")
+                self.update_text("Select a target region mode first. R for rect, L for line.")
                 return
             self.target_region_points.append(pos_table)
             marker = Circle(pos_plot, 0.035, facecolor="red", edgecolor="black")
@@ -328,10 +338,23 @@ class SearchRequestSelector:
             self.advance_mode()
             return
 
+        if self.current_mode == "route_type":
+            if key in {"escape", "esc", "enter", "return"}:
+                self.route_type = ROUTE_TYPE_DEFAULT
+                self.advance_mode()
+                return
+            route_type = ROUTE_TYPE_KEY_MAP.get(key)
+            if route_type is None:
+                self.update_text("Unsupported key. Use D for direct, B for bank, or esc/enter for direct.")
+                return
+            self.route_type = route_type
+            self.advance_mode()
+            return
+
         if self.current_mode == "target_region":
             region_cls = REGION_KEY_MAP.get(key)
             if region_cls is None:
-                self.update_text("Unsupported key. Use A for rectangle or B for line.")
+                self.update_text("Unsupported key. Use R for rectangle or L for line.")
                 return
             self.region_mode = region_cls
             self.target_region_points.clear()
@@ -403,6 +426,7 @@ class SearchRequestSelector:
             other_balls_info=self.other_balls_info or None,
             target_pocket_id=self.target_pocket_id,
             target_region=self.target_region,
+            route_type=self.route_type,
         )
         self.update_text("Selection complete. Close this window to continue.")
 

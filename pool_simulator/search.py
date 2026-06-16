@@ -23,15 +23,19 @@ class SearchRequest:
     target_ball_id: str
     target_pocket_id: str
     target_region: PositionTarget
+    route_type: str = "direct"
 
     def __repr__(self):
-        return (f"SearchRequest(shot: {self.shot}, "
-                f"target_ball_id: {self.target_ball_id}, "
-                f"target_pocket_id: {self.target_pocket_id}, "
-                f"target_region: {self.target_region})")
+        return (
+            f"SearchRequest(shot: {self.shot}, "
+            f"target_ball_id: {self.target_ball_id}, "
+            f"target_pocket_id: {self.target_pocket_id}, "
+            f"target_region: {self.target_region}. "
+            f"route_type: {self.route_type})"
+        )
 
     def __iter__(self):
-        return iter((self.shot, self.target_ball_id, self.target_pocket_id, self.target_region))
+        return iter((self.shot, self.target_ball_id, self.target_pocket_id, self.target_region, self.route_type))
 
 
 @dataclass
@@ -96,6 +100,8 @@ class ScoresHelper:
         seen = set()
         idx = []
         for i in np.argsort(scores)[::-1]:
+            if scores[i] == 0:
+                continue
             key = ScoresHelper._policy_key(policies[i])
             if key in seen:
                 continue
@@ -115,6 +121,8 @@ class ScoresHelper:
 
         idx = []
         for i in np.argsort(scores)[::-1]:
+            if scores[i] == 0:
+                continue
             if any(policies[j].rough_equal(policies[i]) for j in idx):
                 continue
             idx.append(i)

@@ -5,7 +5,7 @@ from table import ChineseTableSpecs
 from search import PolicySearch, SearchRequest, SearchConfig
 from geometry import Rect
 from visual import PoolLayout, select_pool_layout
-from evaluation import ShotEvaluation, ShotScoreConfig
+from evaluation import ShotEvaluation
 
 
 chinese_table = ChineseTableSpecs.chinese_table
@@ -15,12 +15,12 @@ SEARCH_ROUNDS = 3
 
 SEARCH_CONFIG = SearchConfig(
     display_k=TOP_K,
-    search_k=15,
+    search_k=20,
     refine_k=10,
     precise=True,
     quick_mode="stochastic",
     n_rounds=3,
-    stochastic_max_iter=500,
+    stochastic_max_iter=1000,
     sample_mode="LHS",
     seed=42,
 )
@@ -47,6 +47,7 @@ def build_search_request(layout: PoolLayout):
         target_ball_id=layout.target_ball_id,
         target_pocket_id=layout.target_pocket_id,
         target_region=layout.target_region,
+        route_type=layout.route_type,
     )
 
 
@@ -87,6 +88,7 @@ def main():
             search_request.target_ball_id,
             search_request.target_pocket_id,
             search_request.target_region,
+            route_type=search_request.route_type
         )
         # if shot_evaluator.position_quality <= 0.4:
         #     print(f"Skipping route: position quality={shot_evaluator.position_quality} is too low")

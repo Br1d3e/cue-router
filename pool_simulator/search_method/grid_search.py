@@ -49,7 +49,7 @@ class GridSearch:
     def _search(search_request, side_seeds=SIDE_SEEDS,
                 v0_values=V0_VALUES, phi_offsets=PHI_OFFSETS,
                 eval_config=None):
-        shot, target_ball_id, target_pocket_id, target_rect = search_request
+        shot, target_ball_id, target_pocket_id, target_region, route_type = search_request
         target_ball = shot.balls.get(target_ball_id)
         cue_ball = shot.balls.get(shot.cue.cue_ball_id)
 
@@ -60,7 +60,11 @@ class GridSearch:
 
         target_ball_pos = target_ball.xyz[:2]
         cue_ball_pos = cue_ball.xyz[:2]
-        phi0 = Geometry.aim_phi(target_pocket_id, target_ball_pos, cue_ball_pos)
+        if route_type == "bank":
+            phi0 = Geometry.aim_phi_bank(target_pocket_id, target_ball_pos, cue_ball_pos)
+            phi_offsets = np.linspace(-12, 12, num=1 + 12 * 6)
+        else:
+            phi0 = Geometry.aim_phi(target_pocket_id, target_ball_pos, cue_ball_pos)
         if phi0 is None:
             print(f"shot not reachable. cue_ball at {cue_ball_pos} | target_ball at {target_ball_pos} "
                   f"| target_pocket: {target_pocket_id}")
@@ -78,9 +82,10 @@ class GridSearch:
                     new_shot = shot.copy()
                     new_shot.cue.set_state(V0=V0, a=a, b=b, phi=phi, theta=0.0)
 
-                    score = shot_evaluator.evaluate_shot_strict(new_shot, target_ball_id, target_pocket_id, target_rect)
+                    score = shot_evaluator.evaluate_shot_strict(new_shot, target_ball_id, target_pocket_id, target_region,
+                                                                route_type=route_type)
                     scores.append(score)
-                    policies.append(ShotAction(phi, V0, a, b))
+                    policies.append(ShotAction(phi, V0, a, b, route_type=route_type))
 
         return np.asarray(scores, dtype=float), np.asarray(policies, dtype=object)
 

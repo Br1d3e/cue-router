@@ -50,7 +50,8 @@ class StochasticSearch:
         self.shot = search_request.shot
         self.target_ball_id = search_request.target_ball_id
         self.target_pocket_id = search_request.target_pocket_id
-        self.target_rect = search_request.target_region
+        self.target_region = search_request.target_region
+        self.route_type = search_request.route_type
         self.scores = np.asarray([], dtype=float)
         self.policies = np.asarray([], dtype=object)
         self.rng = np.random.default_rng(seed)
@@ -81,7 +82,10 @@ class StochasticSearch:
 
         target_ball_pos = target_ball.xyz[:2]
         cue_ball_pos = cue_ball.xyz[:2]
-        phi0 = Geometry.aim_phi(self.target_pocket_id, target_ball_pos, cue_ball_pos)
+        if self.route_type == "bank":
+            phi0 = Geometry.aim_phi_bank(self.target_pocket_id, target_ball_pos, cue_ball_pos)
+        else:
+            phi0 = Geometry.aim_phi(self.target_pocket_id, target_ball_pos, cue_ball_pos)
         if phi0 is None:
             print(f"shot not reachable. cue_ball at {cue_ball_pos} | target_ball at {target_ball_pos} "
                   f"| target_pocket: {self.target_pocket_id}")
@@ -98,7 +102,7 @@ class StochasticSearch:
             phi_offset, V0, a, b = sample
             phi = phi0 + phi_offset
 
-            policy = ShotAction(phi, V0, a, b)
+            policy = ShotAction(phi, V0, a, b, route_type=self.route_type)
             new_shot = self.shot.copy()
             new_shot.cue.set_state(V0=V0, a=a, b=b, phi=phi, theta=0.0)
 
@@ -106,7 +110,8 @@ class StochasticSearch:
                 new_shot,
                 self.target_ball_id,
                 self.target_pocket_id,
-                self.target_rect
+                self.target_region,
+                route_type=self.route_type
             )
             score = self.evaluator.score
 
@@ -142,6 +147,9 @@ class StochasticSearch:
         sample = sampler.random(n=1)
         l_bounds = [-8, 1, -0.1, -0.1]
         u_bounds = [8, 5, 0.1, 0.1]
+        if "bank" in self.route_type:
+            l_bounds[0] = -12
+            u_bounds[0] = 12
         scaled_sample = qmc.scale(sample, l_bounds, u_bounds).flatten()
 
         phi_offset, V0, d_a, d_b = scaled_sample
@@ -157,6 +165,9 @@ class StochasticSearch:
         sample = sampler.random(n=1)
         l_bounds = [-8, 1, 0, -0.1, -0.1]
         u_bounds = [8, 5, 9, 0.1, 0.1]
+        if "bank" in self.route_type:
+            l_bounds[0] = -12
+            u_bounds[0] = 12
         scaled_sample = qmc.scale(sample, l_bounds, u_bounds).flatten()
 
         phi_offset, V0, spin_family_idx, d_a, d_b = scaled_sample

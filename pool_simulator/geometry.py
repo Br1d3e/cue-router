@@ -137,8 +137,12 @@ class Geometry:
         return d >= 2 * R - eps
 
     @staticmethod
-    def aim_phi(pocket_id: str, target_pos, cue_pos):
-        pocket_pos = np.array(ChineseTableSpecs.pocket_pos_by_id(pocket_id))
+    def aim_phi(pocket, target_pos, cue_pos):
+        if isinstance(pocket, str):
+            pocket_pos = np.array(ChineseTableSpecs.pocket_pos_by_id(pocket))
+        else:
+            pocket_pos = np.array(pocket[:2])
+        pocket_pos = np.array(pocket_pos[:2])
         target_pos = np.array(target_pos[:2])
         cue_pos = np.array(cue_pos[:2])
 
@@ -156,3 +160,49 @@ class Geometry:
         phi = np.degrees(np.atan2(vec_aim[1], vec_aim[0])) % 360
 
         return float(phi)
+
+    @staticmethod
+    def _mirror_point_across_rail(p, rail, W, L, R=0.0):
+        x, y = p
+
+        if rail == "left":
+            c = R
+            return np.asarray((2 * c - x, y), dtype=float)
+
+        if rail == "right":
+            c = W - R
+            return np.asarray((2 * c - x, y), dtype=float)
+
+        if rail == "bottom":
+            c = R
+            return np.asarray((x, 2 * c - y), dtype=float)
+
+        if rail == "top":
+            c = L - R
+            return np.asarray((x, 2 * c - y), dtype=float)
+
+        raise ValueError(f"unknown rail: {rail}")
+
+    @staticmethod
+    def aim_phi_bank(pocket, target_pos, cue_pos):
+        if isinstance(pocket, str):
+            pocket_pos = np.array(ChineseTableSpecs.pocket_pos_by_id(pocket))
+        else:
+            pocket_pos = np.asarray(pocket[:2])
+        table_length = ChineseTableSpecs.TABLE_LENGTH
+        table_width = ChineseTableSpecs.TABLE_WIDTH
+        R = ChineseTableSpecs.BALL_RADIUS
+
+        rails = ["left", "right", "bottom", "top"]
+        mirrored_pocket_pos = None
+        for rail in rails:
+            pos = Geometry._mirror_point_across_rail(pocket_pos, rail, W=table_width, L=table_length, R=R)
+            if Geometry.aim_phi(pos, target_pos, cue_pos) is None:
+                continue
+            mirrored_pocket_pos = pos
+
+        if mirrored_pocket_pos is None:
+            return None
+        return Geometry.aim_phi(mirrored_pocket_pos, target_pos, cue_pos)
+
+

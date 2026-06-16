@@ -289,15 +289,20 @@ class ShotEvaluation:
         cb_xy = shot.balls.get(shot.cue.cue_ball_id).xyz[:2]
         return target_region.position_quality(cb_xy, position_k=k)
 
-    def get_target_route_quality(self, shot: pt.System, target_id, pocket_id, k_b=0.8, k_c=1.0) -> float:
+    def get_target_route_quality(self, shot: pt.System, target_id, pocket_id, k_b=0.8, k_c=1.0, route_type="direct") -> float:
         if k_b is None:
             k_b = 0.8
         if k_c is None:
             k_c = 1.0
+        desired_c = {
+            "direct": 0,
+            "bank": 1,
+            "one_rail_bank": 1
+        }
         b = self.target_ball_collision_count(shot, target_id, pocket_id)
         c = self.target_cushions_count(shot, target_id, pocket_id)
 
-        return 0.1 + 0.9 * (np.exp(-(k_b * b + k_c * c)))
+        return 0.1 + 0.9 * (np.exp(-(k_b * b + k_c * abs(c - desired_c[route_type]))))
 
     def get_cue_action_ease(self, shot: pt.System, k=0.5) -> float:
         if k is None:
@@ -396,7 +401,7 @@ class ShotEvaluation:
         return self.route_robustness
 
     def evaluate_shot(self, shot: pt.System, target_id, pocket_id, target_region,
-                      strict_mode, config) -> float:
+                      strict_mode, config, route_type="direct") -> float:
         if not isinstance(config, ShotScoreConfig):
             raise ValueError(f"config must be instance of ShotScoreConfig, got {type(config)!r} instead.")
         position_k = config.position_k
@@ -420,7 +425,7 @@ class ShotEvaluation:
 
         self.position_quality = self.get_position_quality(shot, target_region, k=position_k)
         self.target_route_quality = self.get_target_route_quality(shot, target_id, pocket_id, k_b=target_collision_k,
-                                                                  k_c=target_cushion_k)
+                                                                  k_c=target_cushion_k, route_type=route_type)
         self.cue_action_ease = self.get_cue_action_ease(shot, k=cue_action_k)
         self.cue_route_quality = self.get_cue_route_quality(shot, target_id, k_1=cue_route_collision_k,
                                                             k_2=cue_route_corner_k, k_3=cue_route_cushion_k)
@@ -436,15 +441,17 @@ class ShotEvaluation:
 
         return self.score
 
-    def evaluate_shot_norm(self, shot: pt.System, target_id, pocket_id, target_region, config=None):
+    def evaluate_shot_norm(self, shot: pt.System, target_id, pocket_id, target_region,
+                           route_type="direct", config=None):
         if config is None:
             config = self.config
-        return self.evaluate_shot(shot, target_id, pocket_id, target_region, False, config=config)
+        return self.evaluate_shot(shot, target_id, pocket_id, target_region, False, route_type=route_type, config=config)
 
-    def evaluate_shot_strict(self, shot: pt.System, target_id, pocket_id, target_region, config=None):
+    def evaluate_shot_strict(self, shot: pt.System, target_id, pocket_id, target_region,
+                             route_type="direct", config=None):
         if config is None:
             config = self.config
-        return self.evaluate_shot(shot, target_id, pocket_id, target_region, strict_mode=True, config=config)
+        return self.evaluate_shot(shot, target_id, pocket_id, target_region, route_type=route_type, strict_mode=True, config=config)
 
     def evaluate_shot_final(
             self,
@@ -452,12 +459,13 @@ class ShotEvaluation:
             target_id,
             pocket_id,
             target_region,
+            route_type="direct",
             config: ShotScoreConfig = None,
     ):
         if config is None:
             config = self.config
         robustness_shot = shot.copy()
-        base_score = self.evaluate_shot_strict(shot, target_id, pocket_id, target_region, config=config)
+        base_score = self.evaluate_shot_strict(shot, target_id, pocket_id, target_region, route_type=route_type, config=config)
         robustness = self.get_route_robustness(
             base_score,
             robustness_shot,
