@@ -1,42 +1,12 @@
 from dataclasses import dataclass
 
 import numpy as np
-import pooltool as pt
 
-try:
-    from .geometry import PositionTarget, Rect, LineSegment
-    from .search_method.grid_search import GridSearch
-    from .search_method.pattern_search import PatternSearch
-    from .search_method.stochastic_search import StochasticSearch
-    from .evaluation import ShotScoreConfig, ShotEvaluation
-except ImportError:
-    from geometry import Rect, PositionTarget, LineSegment
-    from search_method.grid_search import GridSearch
-    from search_method.pattern_search import PatternSearch
-    from search_method.stochastic_search import StochasticSearch
-    from evaluation import ShotScoreConfig, ShotEvaluation
-
-
-@dataclass
-class SearchRequest:
-    shot: pt.System
-    target_ball_id: str
-    target_pocket_id: str
-    target_region: PositionTarget
-    route_type: str = "direct"
-
-    def __repr__(self):
-        return (
-            f"SearchRequest(shot: {self.shot}, "
-            f"target_ball_id: {self.target_ball_id}, "
-            f"target_pocket_id: {self.target_pocket_id}, "
-            f"target_region: {self.target_region}. "
-            f"route_type: {self.route_type})"
-        )
-
-    def __iter__(self):
-        return iter((self.shot, self.target_ball_id, self.target_pocket_id, self.target_region, self.route_type))
-
+from cue_router.core.request import SearchRequest
+from cue_router.executor.search_method.grid_search import GridSearch
+from cue_router.executor.search_method.pattern_search import PatternSearch
+from cue_router.executor.search_method.stochastic_search import StochasticSearch
+from cue_router.executor.shot_evaluation import ShotScoreConfig, ShotEvaluation
 
 @dataclass
 class SearchConfig:

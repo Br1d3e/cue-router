@@ -8,11 +8,11 @@ import numpy as np
 import pooltool as pt
 
 try:
-    from .geometry import Rect, PositionTarget, LineSegment
-    from .table import ChineseTableSpecs
+    from cue_router.core.geometry import Rect, PositionTarget, LineSegment
+    from cue_router.core.table import ChineseTableSpecs
 except ImportError:
-    from geometry import Rect, PositionTarget, LineSegment
-    from table import ChineseTableSpecs
+    from cue_router.core.geometry import Rect, PositionTarget, LineSegment
+    from cue_router.core.table import ChineseTableSpecs
 
 
 @dataclass
@@ -84,6 +84,12 @@ def disable_conflicting_matplotlib_keys():
         plt.rcParams[keymap_name] = [
             key for key in plt.rcParams[keymap_name]
             if key.lower() != "q"
+        ]
+
+    for keymap_name in "keymap.xscale", "keymap.yscale":
+        plt.rcParams[keymap_name] = [
+            key for key in plt.rcParams[keymap_name]
+            if key.lower() != "l"
         ]
 
 

@@ -3,12 +3,8 @@ from dataclasses import dataclass
 import pooltool as pt
 import numpy as np
 
-try:
-    from .table import ChineseTableSpecs
-    from .action import ShotAction
-except ImportError:
-    from table import ChineseTableSpecs
-    from action import ShotAction
+from cue_router.core.table import ChineseTableSpecs
+from cue_router.executor.action import ShotAction
 
 
 class InvalidReason(Enum):

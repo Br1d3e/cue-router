@@ -1,14 +1,8 @@
 import numpy as np
-import pooltool as pt
 
-try:
-    from ..action import ShotAction
-    from ..evaluation import ShotEvaluation, ShotScoreConfig
-    from ..geometry import Geometry
-except ImportError:
-    from action import ShotAction
-    from evaluation import ShotEvaluation, ShotScoreConfig
-    from geometry import Geometry
+from cue_router.core.geometry import Geometry
+from cue_router.executor.action import ShotAction
+from cue_router.executor.shot_evaluation import ShotEvaluation, ShotScoreConfig
 
 
 class GridSearch:

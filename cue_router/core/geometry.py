@@ -1,10 +1,7 @@
 from dataclasses import dataclass, field
 import numpy as np
 
-try:
-    from .table import ChineseTableSpecs
-except ImportError:
-    from table import ChineseTableSpecs
+from cue_router.core.table import ChineseTableSpecs
 
 class PositionTarget:
     def position_quality(self, xy, position_k):
@@ -204,5 +201,4 @@ class Geometry:
         if mirrored_pocket_pos is None:
             return None
         return Geometry.aim_phi(mirrored_pocket_pos, target_pos, cue_pos)
-
 
