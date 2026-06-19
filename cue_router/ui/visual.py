@@ -153,7 +153,7 @@ def create_table_axes():
         fig_width,
         linewidth=1,
         edgecolor="black",
-        facecolor="g",
+        facecolor="none",
         alpha=0.95,
     )
     ax.add_patch(table_rect)
@@ -179,6 +179,47 @@ def create_pockets(ax):
         pocket_id: create_pocket(ax, pos.copy(), theta1, theta2, pocket_id, fig_radius)
         for pocket_id, (pos, theta1, theta2) in pocket_specs.items()
     }
+
+
+def add_heatmap_target(ax, heatmap, alpha=0.8, cmap="viridis", colorbar=True):
+    scores = np.ma.masked_where(heatmap.scores <= 0, heatmap.scores)
+    image = scores.T[:, ::-1]
+    extent = (
+        TABLE_ORIGIN[0],
+        TABLE_ORIGIN[0] + ChineseTableSpecs.TABLE_LENGTH * ZOOM_FACTOR,
+        TABLE_ORIGIN[1],
+        TABLE_ORIGIN[1] + ChineseTableSpecs.TABLE_WIDTH * ZOOM_FACTOR,
+    )
+    artist = ax.imshow(
+        image,
+        extent=extent,
+        origin="lower",
+        cmap=cmap,
+        alpha=alpha,
+        vmin=0.4,
+        vmax=1.0,
+        interpolation="bilinear",
+    )
+    if colorbar:
+        ax.figure.colorbar(artist, ax=ax, fraction=0.035, pad=0.02, label="position quality")
+    return artist
+
+
+def show_heatmap_target(heatmap, layout=None, title="CueRouter Heatmap Target"):
+    fig, ax = create_table_axes()
+    create_pockets(ax)
+    add_heatmap_target(ax, heatmap)
+    ax.set_title(title)
+
+    if layout is not None:
+        create_ball(ax, table_to_plot(layout.cue_ball_pos), BALL_COLORS["cue"])
+        create_ball(ax, table_to_plot(layout.target_ball_pos), BALL_COLORS[layout.target_ball_id])
+        if layout.other_balls_info:
+            for ball_id, pos in layout.other_balls_info.items():
+                create_ball(ax, table_to_plot(pos), BALL_COLORS.get(ball_id, ("white", "black")))
+
+    plt.show()
+    return fig, ax
 
 
 class SearchRequestSelector:

@@ -111,6 +111,7 @@ class HeatmapTarget(PositionTarget):
     scores: np.ndarray = field(default_factory=lambda: np.zeros((100, 50), dtype=float))
     table_width: float = ChineseTableSpecs.TABLE_WIDTH
     table_length: float = ChineseTableSpecs.TABLE_LENGTH
+    pocket_mask_radius: float = 1.5 * ChineseTableSpecs.BALL_RADIUS
 
     @classmethod
     def from_evaluator(
@@ -121,10 +122,13 @@ class HeatmapTarget(PositionTarget):
             obstacles=None,
             m=100,
             n=50,
+            pocket_mask_radius=1.5 * ChineseTableSpecs.BALL_RADIUS,
     ):
-        heatmap = cls(np.zeros((m, n), dtype=float))
+        heatmap = cls(np.zeros((m, n), dtype=float), pocket_mask_radius=pocket_mask_radius)
         for row, y in enumerate(heatmap.y_coords):
             for col, x in enumerate(heatmap.x_coords):
+                if not heatmap.is_valid_position((x, y)):
+                    continue
                 heatmap.scores[row, col] = evaluator(
                     (x, y),
                     target_ball_pos,
@@ -141,13 +145,14 @@ class HeatmapTarget(PositionTarget):
         self.m, self.n = self.scores.shape
         if self.m < 2 or self.n < 2:
             raise ValueError(f"scores must be at least 2x2, got shape {self.scores.shape!r}")
-        self.y_coords = np.linspace(0.0, self.table_length, self.m)
-        self.x_coords = np.linspace(0.0, self.table_width, self.n)
+        r = ChineseTableSpecs.BALL_RADIUS
+        self.y_coords = np.linspace(r, self.table_length - r, self.m)
+        self.x_coords = np.linspace(r, self.table_width - r, self.n)
         self.scores = np.clip(self.scores, 0.0, 1.0)
 
     def position_quality(self, xy, position_k=None):
         x, y = np.asarray(xy[:2], dtype=float)
-        if x < 0 or x > self.table_width or y < 0 or y > self.table_length:
+        if not self.is_valid_position((x, y)):
             return 0.0
 
         x_idx = np.searchsorted(self.x_coords, x, side="right") - 1
@@ -169,6 +174,41 @@ class HeatmapTarget(PositionTarget):
         top = (1 - tx) * q00 + tx * q10
         bottom = (1 - tx) * q01 + tx * q11
         return float(np.clip((1 - ty) * top + ty * bottom, 0.0, 1.0))
+
+    def thresholded(self, threshold):
+        scores = self.scores.copy()
+        scores[scores < threshold] = 0.0
+        return HeatmapTarget(
+            scores,
+            table_width=self.table_width,
+            table_length=self.table_length,
+            pocket_mask_radius=self.pocket_mask_radius,
+        )
+
+    def mean_top_fraction(self, fraction):
+        if fraction <= 0:
+            return 0.0
+        values = self.scores[self.scores > 0]
+        if values.size == 0:
+            return 0.0
+        k = max(1, int(np.ceil(values.size * fraction)))
+        top_values = np.sort(values)[-k:]
+        return float(np.mean(top_values))
+
+    def is_valid_position(self, xy):
+        x, y = np.asarray(xy[:2], dtype=float)
+        if not ChineseTableSpecs.in_table((x, y)):
+            return False
+        return not self.is_in_physical_pocket((x, y))
+
+    def is_in_physical_pocket(self, xy):
+        xy = np.asarray(xy[:2], dtype=float)
+        for pocket in ChineseTableSpecs.chinese_table.pockets.values():
+            pocket_xy = np.asarray(pocket.center[:2], dtype=float)
+            if np.linalg.norm(xy - pocket_xy) < self.pocket_mask_radius:
+                return True
+        return False
+
 
 
 class Geometry:

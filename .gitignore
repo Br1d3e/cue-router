@@ -1,5 +1,6 @@
 test*.ipynb
 *test*.py
+tests/
 
 # IDEA
 .idea/
@@ -14,9 +15,4 @@ __pycache__/
 # OS files
 .DS_Store
 Thumbs.db
-
-AGENTS.md
-CONTEXT.md
-
-docs/agents/
 
