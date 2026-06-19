@@ -106,6 +106,71 @@ class LineSegment(PositionTarget):
         return 1 / (1 + position_k * distance)
 
 
+@dataclass
+class HeatmapTarget(PositionTarget):
+    scores: np.ndarray = field(default_factory=lambda: np.zeros((100, 50), dtype=float))
+    table_width: float = ChineseTableSpecs.TABLE_WIDTH
+    table_length: float = ChineseTableSpecs.TABLE_LENGTH
+
+    @classmethod
+    def from_evaluator(
+            cls,
+            evaluator,
+            target_ball_pos,
+            target_pocket_id,
+            obstacles=None,
+            m=100,
+            n=50,
+    ):
+        heatmap = cls(np.zeros((m, n), dtype=float))
+        for row, y in enumerate(heatmap.y_coords):
+            for col, x in enumerate(heatmap.x_coords):
+                heatmap.scores[row, col] = evaluator(
+                    (x, y),
+                    target_ball_pos,
+                    target_pocket_id,
+                    obstacles=obstacles,
+                )
+        heatmap.scores = np.clip(heatmap.scores, 0.0, 1.0)
+        return heatmap
+
+    def __post_init__(self):
+        self.scores = np.asarray(self.scores, dtype=float)
+        if self.scores.ndim != 2:
+            raise ValueError(f"scores must be a 2D array, got shape {self.scores.shape!r}")
+        self.m, self.n = self.scores.shape
+        if self.m < 2 or self.n < 2:
+            raise ValueError(f"scores must be at least 2x2, got shape {self.scores.shape!r}")
+        self.y_coords = np.linspace(0.0, self.table_length, self.m)
+        self.x_coords = np.linspace(0.0, self.table_width, self.n)
+        self.scores = np.clip(self.scores, 0.0, 1.0)
+
+    def position_quality(self, xy, position_k=None):
+        x, y = np.asarray(xy[:2], dtype=float)
+        if x < 0 or x > self.table_width or y < 0 or y > self.table_length:
+            return 0.0
+
+        x_idx = np.searchsorted(self.x_coords, x, side="right") - 1
+        y_idx = np.searchsorted(self.y_coords, y, side="right") - 1
+        x_idx = int(np.clip(x_idx, 0, self.n - 2))
+        y_idx = int(np.clip(y_idx, 0, self.m - 2))
+
+        x0 = self.x_coords[x_idx]
+        x1 = self.x_coords[x_idx + 1]
+        y0 = self.y_coords[y_idx]
+        y1 = self.y_coords[y_idx + 1]
+        tx = 0.0 if x1 == x0 else (x - x0) / (x1 - x0)
+        ty = 0.0 if y1 == y0 else (y - y0) / (y1 - y0)
+
+        q00 = self.scores[y_idx, x_idx]
+        q10 = self.scores[y_idx, x_idx + 1]
+        q01 = self.scores[y_idx + 1, x_idx]
+        q11 = self.scores[y_idx + 1, x_idx + 1]
+        top = (1 - tx) * q00 + tx * q10
+        bottom = (1 - tx) * q01 + tx * q11
+        return float(np.clip((1 - ty) * top + ty * bottom, 0.0, 1.0))
+
+
 class Geometry:
     BALL_RADIUS = ChineseTableSpecs.BALL_RADIUS
 
@@ -201,4 +266,3 @@ class Geometry:
         if mirrored_pocket_pos is None:
             return None
         return Geometry.aim_phi(mirrored_pocket_pos, target_pos, cue_pos)
-

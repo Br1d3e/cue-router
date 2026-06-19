@@ -1,5 +1,5 @@
-test*.py
 test*.ipynb
+*test*.py
 
 # IDEA
 .idea/
@@ -16,6 +16,7 @@ __pycache__/
 Thumbs.db
 
 AGENTS.md
-PROJECT.md
+CONTEXT.md
 
+docs/agents/
 
