@@ -5,6 +5,7 @@ import numpy as np
 from cue_router.core.geometry import HeatmapTarget
 from cue_router.core.table import ChineseTableSpecs
 from cue_router.planner.planner_evaluation import PlannerEvaluation, ShotOption
+from cue_router.ui.layout import PlannerLayout
 
 @dataclass
 class PlannerConfig:
@@ -26,7 +27,13 @@ class PlannerSearch:
         self.config = config or PlannerConfig()
 
     def search(self, layout, legal_target_balls, display_k=None):
-        cue_xy, balls = self.normalize_layout(layout)
+        if not isinstance(layout, PlannerLayout):
+            raise TypeError(f"layout must be PlannerLayout, got {type(layout)!r}")
+        cue_xy = PlannerEvaluation._xy(layout.cue_ball_pos)
+        balls = {
+            str(ball_id): PlannerEvaluation._xy(pos)
+            for ball_id, pos in layout.balls_info.items()
+        }
         legal_targets = [ball_id for ball_id in legal_target_balls if ball_id in balls]
         options = []
 
@@ -141,20 +148,3 @@ class PlannerSearch:
         playable_count = sum(q >= self.config.playable_threshold for q in qualities)
         option_bonus = self.config.option_bonus_weight * np.log1p(max(0, playable_count - 1))
         return float(np.clip(best + option_bonus, 0.0, 1.0))
-
-    @staticmethod
-    def normalize_layout(layout):
-        if isinstance(layout, tuple) and len(layout) == 2:
-            cue_xy, balls = layout
-            return PlannerEvaluation._xy(cue_xy), {
-                str(ball_id): PlannerEvaluation._xy(pos)
-                for ball_id, pos in balls.items()
-            }
-
-        balls = {
-            str(layout.target_ball_id): PlannerEvaluation._xy(layout.target_ball_pos),
-        }
-        if layout.other_balls_info:
-            for ball_id, pos in layout.other_balls_info.items():
-                balls[str(ball_id)] = PlannerEvaluation._xy(pos)
-        return PlannerEvaluation._xy(layout.cue_ball_pos), balls

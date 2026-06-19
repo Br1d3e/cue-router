@@ -59,6 +59,9 @@ Coding guidelines:
 * **Planner config**: The dataclass of tunable planner heuristics, including heatmap size, lookahead depth, candidate caps, cut-angle threshold, and option-richness weights.
 * **Physical table state**: The current cue-ball and object-ball positions independent of rules legality. `PoolLayout` is the current UI-oriented representation and may later migrate to a `(cue_xy, balls_info)` shape.
 * **Planner ball map**: The planner's normalized physical-state shape: `cue_xy` plus a mapping from object-ball IDs to positions, excluding the cue ball.
+* **Executor layout**: A target-specific UI layout for executor search, containing cue ball, chosen target ball, target pocket, route type, other balls, and target region.
+* **Planner layout**: A physical table-state UI layout for planner search, containing cue ball and object-ball positions only.
+* **Planner layout import**: A planner layout can be built from a pooltool shot/system so planner search can consume active table state through the same stable layout interface. Pocketed object balls are excluded.
 * **Shot option list**: The planner returns a ranked top-K list of shot options so downstream execution can try fallbacks when the best planner idea is not executable.
 * **Shot option**: A lightweight planner intent containing target ball, target pocket, route type, position target, heuristic score, and planner score breakdown. It does not own a pooltool system or cue action.
 * **Search request conversion**: A shot option can create a `SearchRequest` when given the current shot/system, but it does not store that system itself.
