@@ -16,13 +16,19 @@ class PlannerConfig:
     option_bonus_weight: float = 0.05
     top_heatmap_percent: float = 0.05
     target_region_threshold: float = 0.4
+    future_position_contrast: float = 2.0
     max_cut_angle_deg: float = 80.0
-    grid_m: int = 80
-    grid_n: int = 40
+    grid_m: int = 60
+    grid_n: int = 30
     pocket_mask_radius: float = 1.5 * ChineseTableSpecs.BALL_RADIUS
+    cue_target_distance_free: float = 0.45
+    cue_target_distance_softness: float = 0.65
+    cue_target_distance_min_quality: float = 0.75
 
 
 class PlannerSearch:
+    EIGHT_BALL_ID = "8"
+
     def __init__(self, config=None):
         self.config = config or PlannerConfig()
 
@@ -70,8 +76,12 @@ class PlannerSearch:
             obstacles=balls,
         )
         future_balls = {ball_id: xy for ball_id, xy in balls.items() if ball_id != target_ball_id}
-        future_legal_targets = [ball_id for ball_id in legal_targets if ball_id != target_ball_id]
-        heatmap = self._build_future_heatmap(future_balls, future_legal_targets)
+        future_legal_targets = self._future_legal_targets(
+            balls,
+            legal_targets,
+            target_ball_id,
+        )
+        heatmap = self._build_future_heatmap(future_balls, future_legal_targets, target_xy)
         future_position_value = heatmap.mean_top_fraction(self.config.top_heatmap_percent)
         score = current_pot_quality * future_position_value
 
@@ -89,13 +99,13 @@ class PlannerSearch:
             },
         )
 
-    def _build_future_heatmap(self, balls, legal_targets):
+    def _build_future_heatmap(self, balls, legal_targets, target_ball_pos):
         if self.config.lookahead_depth <= 0 or len(legal_targets) == 0:
             return self._terminal_heatmap()
 
         return HeatmapTarget.from_evaluator(
             self._future_position_value,
-            target_ball_pos=None,
+            target_ball_pos=target_ball_pos,
             target_pocket_id=None,
             obstacles={
                 "balls": balls,
@@ -133,12 +143,13 @@ class PlannerSearch:
                         max_cut_angle_deg=self.config.max_cut_angle_deg,
                 ):
                     continue
-                qualities.append(PlannerEvaluation.evaluate_shot_ease(
+                shot_ease = PlannerEvaluation.evaluate_position(
                     cue_xy,
                     balls[ball_id],
                     pocket_id,
                     obstacles=balls,
-                ))
+                )
+                qualities.append(shot_ease)
 
         if len(qualities) == 0:
             return 0.0
@@ -147,4 +158,29 @@ class PlannerSearch:
         best = qualities[0]
         playable_count = sum(q >= self.config.playable_threshold for q in qualities)
         option_bonus = self.config.option_bonus_weight * np.log1p(max(0, playable_count - 1))
-        return float(np.clip(best + option_bonus, 0.0, 1.0))
+        position_value = np.clip(best + option_bonus, 0.0, 1.0) ** self.config.future_position_contrast
+        distance_quality = self._cue_target_distance_quality(cue_xy, target_ball_pos)
+        return float(position_value * distance_quality)
+
+    def _cue_target_distance_quality(self, cue_xy, target_ball_pos):
+        if target_ball_pos is None:
+            return 1.0
+
+        dist = np.linalg.norm(PlannerEvaluation._xy(cue_xy) - PlannerEvaluation._xy(target_ball_pos))
+        excess = max(0.0, dist - self.config.cue_target_distance_free)
+        if excess == 0.0:
+            return 1.0
+
+        decay = np.exp(-((excess / self.config.cue_target_distance_softness) ** 2))
+        min_quality = self.config.cue_target_distance_min_quality
+        return float(min_quality + (1.0 - min_quality) * decay)
+
+    def _future_legal_targets(self, balls, legal_targets, target_ball_id):
+        future_legal_targets = [ball_id for ball_id in legal_targets if ball_id != target_ball_id]
+        if len(future_legal_targets) > 0:
+            return future_legal_targets
+        if target_ball_id == self.EIGHT_BALL_ID:
+            return []
+        if len(legal_targets) == 1 and self.EIGHT_BALL_ID in balls:
+            return [self.EIGHT_BALL_ID]
+        return []

@@ -29,11 +29,16 @@ class ShotOption:
 
 class PlannerEvaluation:
     BALL_CLEARANCE = 2 * ChineseTableSpecs.BALL_RADIUS
-    OPTIMAL_CO_RANGE = (0.2, 1.0)
-    CUSHION_SAFE_DISTANCE = 0.15
+    OPTIMAL_CO_RANGE = (0.15, 0.6)
+    CUSHION_SAFE_DISTANCE = 0.1
     ALPHA_FREE_DEG = 30.0
     ALPHA_HARD_CUTOFF_DEG = 85.0
     MIN_PLAYABLE_QUALITY = 0.08
+    POSITION_ALPHA_FREE_DEG = 15.0
+    POSITION_ALPHA_SOFTNESS_DEG = 25.0
+    POSITION_OPTIMAL_CO_RANGE = (0.15, 0.6)
+    POSITION_CO_CLOSE_SOFTNESS = 0.18
+    POSITION_CO_FAR_SOFTNESS = 0.55
 
     @classmethod
     def evaluate_position(
@@ -43,12 +48,26 @@ class PlannerEvaluation:
             target_pocket_id,
             obstacles=None,
     ) -> float:
-        return cls.evaluate_shot_ease(
+        shot_ease = cls.evaluate_shot_ease(
             cue_ball_pos,
             target_ball_pos,
             target_pocket_id,
             obstacles=obstacles,
         )
+        if shot_ease <= 0.0:
+            return 0.0
+
+        cue_xy = cls._xy(cue_ball_pos)
+        target_xy = cls._xy(target_ball_pos)
+        v_co = np.linalg.norm(target_xy - cue_xy)
+        alpha_deg = cls.cut_angle_deg(cue_xy, target_xy, target_pocket_id)
+
+        position_quality = (
+            shot_ease
+            * cls._position_cut_angle_quality(alpha_deg)
+            * cls._position_cue_object_distance_quality(v_co)
+        )
+        return float(np.clip(position_quality, 0.0, 1.0))
 
     @classmethod
     def evaluate_shot_ease(
@@ -118,9 +137,24 @@ class PlannerEvaluation:
         t = (v_co - co_max) / (ChineseTableSpecs.TABLE_LENGTH - co_max)
         return float(1.0 - 0.55 * np.clip(t, 0.0, 1.0) ** 1.2)
 
+    @classmethod
+    def _position_cut_angle_quality(cls, alpha_deg):
+        excess = max(0.0, alpha_deg - cls.POSITION_ALPHA_FREE_DEG)
+        return float(np.exp(-((excess / cls.POSITION_ALPHA_SOFTNESS_DEG) ** 2)))
+
+    @classmethod
+    def _position_cue_object_distance_quality(cls, v_co):
+        co_min, co_max = cls.POSITION_OPTIMAL_CO_RANGE
+        too_close = max(0.0, co_min - v_co)
+        too_far = max(0.0, v_co - co_max)
+        return float(np.exp(-(
+            (too_close / cls.POSITION_CO_CLOSE_SOFTNESS) ** 2
+            + (too_far / cls.POSITION_CO_FAR_SOFTNESS) ** 2
+        )))
+
     @staticmethod
     def _object_pocket_distance_quality(v_op):
-        return float(0.35 + 0.65 / (1.0 + (v_op / 1.15) ** 1.6))
+        return float(0.4 + 0.6 / (1.0 + (v_op / 1.15) ** 1.6))
 
     @classmethod
     def cut_angle_deg(cls, cue_ball_pos, target_ball_pos, target_pocket_id):

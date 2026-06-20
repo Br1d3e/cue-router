@@ -13,9 +13,9 @@ from cue_router.core.request import SearchRequest
 
 from cue_router.planner.planner_search import PlannerSearch, PlannerConfig
 
-
 chinese_table = ChineseTableSpecs.chinese_table
-VISUAL_SELECTOR = "planner"
+MODE = "planner"
+VISUAL_SELECTOR = "manual"
 
 PLANNER_CONFIG = PlannerConfig(
     display_k=3
@@ -31,10 +31,11 @@ SEARCH_CONFIG = SearchConfig(
     precise=True,
     quick_mode="stochastic",
     n_rounds=3,
-    stochastic_max_iter=1000,
+    stochastic_max_iter=800,
     sample_mode="LHS",
     seed=42,
 )
+
 
 def manual_layout():
     return ExecutorLayout(
@@ -44,6 +45,19 @@ def manual_layout():
         other_balls_info={'2': (0.43697876973326055, 0.6295808383233537), '3': (0.512917800762112, 1.9184349482852479)},
         target_pocket_id="rb",
         target_region=Rect(0.966442569406641, 0.9924006532389773, 1.1731654872074029, 1.258187261839957)
+    )
+
+
+def manual_layout_2():
+    return PlannerLayout(
+        cue_ball_pos=(0.6247169297768098, 1.2434213391399027),
+        balls_info={'1': (0.9622237343494826, 0.3933260751224834),
+                    '2': (0.6141698421339137, 0.08535111594991918),
+                    '3': (0.32728905824714194, 0.783568317909636),
+                    '4': (0.8926129559063689, 1.1801388132825263),
+                    '5': (0.8082362547632007, 1.8424959172563966),
+                    '7': (0.4285410996189438, 1.960623298856832),
+                    '8': (0.25345944474686966, 1.536630375612412)}
     )
 
 
@@ -101,6 +115,7 @@ def route_search(layout):
 
         pt.simulate(top_shot, inplace=True)
         pt.show(top_shot)
+
 
 def planner_1_ball(shot):
     planner_layout = PlannerLayout.from_shot(shot)
@@ -160,8 +175,9 @@ def planner_full(shot):
     legal_balls = LEGAL_TARGET_BALLS
     planner_layout = PlannerLayout.from_shot(shot)
     while len(legal_balls) > 0:
-        print(planner_layout)
-        plans = planner.search(planner_layout, legal_balls, display_k=2)
+        b4 = time.time()
+        plans = planner.search(planner_layout, legal_balls, display_k=1)
+        print(f"plan search time used, {time.time() - b4:.4f}")
         if len(plans) == 0:
             break
         plan = plans[0]
@@ -176,11 +192,16 @@ def planner_full(shot):
         show_heatmap_target(plan.target_region, layout=planner_layout)
 
         searcher = PolicySearch(plan.to_search_request(shot.copy()))
+        b4 = time.time()
         top_k_scores, top_k_policies = searcher.search(
             search_config=SEARCH_CONFIG,
             eval_config=None,
         )
+        print(f"route search time used, {time.time() - b4:.4f}")
         best_score, best_policy = top_k_scores, top_k_policies
+        if best_score is None:
+            print("shot impossible")
+            return
 
         print("policy score:", best_score)
         print(best_policy)
@@ -193,6 +214,9 @@ def planner_full(shot):
         shot = best_shot
         planner_layout = PlannerLayout.from_shot(shot)
         legal_balls = [ball_id for ball_id in legal_balls if ball_id in planner_layout.balls_info]
+        if len(legal_balls) == 0 and "8" in planner_layout.balls_info:
+            legal_balls.append("8")
+
 
 def main():
     if VISUAL_SELECTOR == "executor":
@@ -200,7 +224,7 @@ def main():
     elif VISUAL_SELECTOR == "planner":
         layout = select_planner_layout()
     else:
-        layout = manual_layout()
+        layout = manual_layout_2()
     print("Pool layout: \n", layout)
     if layout is None:
         raise RuntimeError("No pool layout selected.")
@@ -209,8 +233,12 @@ def main():
     shot = pt.System(table=chinese_table, balls=layout.get_balls(), cue=cue)
     shot.set_ballset(ChineseTableSpecs.ball_set)
 
-    # planner_1_ball(layout, shot)
-    planner_full(shot)
+    if MODE == "executor":
+        route_search(layout)
+    elif MODE == "planner":
+        # planner_1_ball(layout, shot)
+        planner_full(shot)
+
 
 if __name__ == "__main__":
     main()
