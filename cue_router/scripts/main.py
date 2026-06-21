@@ -25,12 +25,14 @@ TOP_K = 5
 
 SEARCH_CONFIG = SearchConfig(
     display_k=TOP_K,
-    search_k=10,
+    search_k=5,
     refine_k=5,
-    precise=True,
+    mode="elite",
     quick_mode="stochastic",
     n_rounds=2,
     stochastic_max_iter=600,
+    elite_max_iter=400,
+    elite_frac=0.5,
     sample_mode="LHS",
     seed=42,
 )
@@ -252,7 +254,7 @@ def main():
         route_search(layout)
     elif MODE == "planner":
         # planner_1_ball(layout, shot)
-        planner_full(shot, True)
+        planner_full(shot, False)
 
 
 if __name__ == "__main__":

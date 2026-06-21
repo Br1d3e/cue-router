@@ -7,8 +7,6 @@ from cue_router.executor.shot_evaluation import ShotEvaluation, ShotScoreConfig
 
 
 class StochasticSearch:
-    SPIN_LIMIT = 0.650
-
     SIDE_SEEDS = np.asarray([
         (0.0, 0.0),  # stun
         (0.0, 0.4),  # follow
@@ -62,10 +60,6 @@ class StochasticSearch:
         side_index = rng.choice(len(cls.SIDE_SEEDS), size)
         return cls.SIDE_SEEDS[side_index]
 
-    @classmethod
-    def valid_spin_mask(cls, a_b):
-        return np.sum(a_b * a_b, axis=1) < cls.SPIN_LIMIT * cls.SPIN_LIMIT
-
     def search(self, max_iterations=1200, sample_mode="random"):
         self.candidate_simulations = 0
         self.valid_potting_candidates = 0
@@ -98,22 +92,7 @@ class StochasticSearch:
         else:
             samples = self.LHS_5d_samples(max_iterations)
 
-        best_score = 0
-        for i, sample in enumerate(samples):
-            if i > max_iterations / 4:
-                if best_score > 0.7:
-                    print(f"early stop. best_score={best_score}")
-                    break
-            if i > max_iterations / 2:
-                if best_score > 0.6:
-                    print(f"early stop. best_score={best_score}")
-                    break
-            if i > max_iterations * 3/4:
-                if best_score > 0.5:
-                    print(f"early stop. best_score={best_score}")
-                    break
-            if i >= max_iterations - 1:
-                print("non stop")
+        for sample in samples:
             phi_offset, V0, a, b = sample
             phi = phi0 + phi_offset
 
@@ -130,7 +109,6 @@ class StochasticSearch:
             )
             self.candidate_simulations += 1
             score = self.evaluator.score
-            best_score = max(score, best_score)
             if score > 0:
                 self.valid_potting_candidates += 1
 
@@ -149,7 +127,7 @@ class StochasticSearch:
         spins = self.SIDE_SEEDS[side_indices]
         spin_noise = self.rng.normal(0, 0.1, size=(size, 2))
         a_b = spins + spin_noise
-        valid_spin = self.valid_spin_mask(a_b)
+        valid_spin = ShotAction.valid_spin_mask(a_b)
 
         phi_offsets = self.rng.uniform(-8, 8, size=size)
         discrete_v0 = self.rng.choice([1.5, 2.5, 3.5, 4.5], size)
@@ -200,7 +178,7 @@ class StochasticSearch:
         spin_family_idx = np.floor(scaled_sample[:, 2]).astype(int)
         spin_family_idx = np.clip(spin_family_idx, 0, len(self.SIDE_SEEDS) - 1)
         a_b = self.SIDE_SEEDS[spin_family_idx] + scaled_sample[:, 3:5]
-        valid_spin = self.valid_spin_mask(a_b)
+        valid_spin = ShotAction.valid_spin_mask(a_b)
 
         samples = np.column_stack((phi_offsets, V0, a_b))
         return samples[valid_spin]

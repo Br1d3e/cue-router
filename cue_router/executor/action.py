@@ -47,5 +47,13 @@ class ShotAction:
         return a * a + b * b < limit * limit
 
     @staticmethod
+    def valid_spin_mask(a_b, limit=0.650):
+        return np.sum(a_b * a_b, axis=1) < limit * limit
+
+    @staticmethod
     def is_V0_possible(V0, low=0.25, high=5.0):
         return low <= V0 <= high
+
+    @staticmethod
+    def valid_V0_mask(V0, low=0.25, high=5.0):
+        return (V0 >= low) & (V0 <= high)

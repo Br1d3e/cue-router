@@ -5,20 +5,24 @@ import numpy as np
 
 from cue_router.core.request import SearchRequest
 from cue_router.executor.search_method.grid_search import GridSearch
+from cue_router.executor.search_method.elite_search import EliteSearch
 from cue_router.executor.search_method.pattern_search import PatternSearch
 from cue_router.executor.search_method.stochastic_search import StochasticSearch
 from cue_router.executor.shot_evaluation import ShotScoreConfig, ShotEvaluation
+
 
 @dataclass
 class SearchConfig:
     display_k: int = 5
     search_k: int = 20
     refine_k: int = 10
-    precise: bool = True
+    mode: str = "precise"
     quick_mode: str = "grid"
     n_rounds: int = PatternSearch.MAX_SEARCHES
     stochastic_max_iter: int = 1200
     sample_mode: str = "random"
+    elite_max_iter: int = 1000
+    elite_frac: float = 0.2
     seed: int = 42
 
     def __repr__(self):
@@ -26,11 +30,13 @@ class SearchConfig:
                 f"  display_k={self.display_k}, \n"
                 f"  search_k={self.search_k}, \n"
                 f"  refine_k={self.refine_k}, \n"
-                f"  precise={self.precise}, \n"
+                f"  mode={self.mode}, \n"
                 f"  quick_mode={self.quick_mode}, \n"
                 f"  n_rounds={self.n_rounds}, \n"
-                f"  stochastic_max_iter={self.stochastic_max_iter}, \n"
                 f"  sample_mode={self.sample_mode}, \n"
+                f"  stochastic_max_iter={self.stochastic_max_iter}, \n"
+                f"  elite_max_iter={self.elite_max_iter}, \n"
+                f"  elite_frac={self.elite_frac}, \n"
                 f"  seed={self.seed}, \n"
                 f")")
 
@@ -237,27 +243,44 @@ class PolicySearch:
             k,
         )
 
+    def elite_search(self, k=5, search_config=None, eval_config=None):
+        seed = search_config.seed if search_config else 42
+        max_iter = search_config.elite_max_iter if search_config else 1000
+        n_rounds = search_config.n_rounds if search_config else 4
+        elite_frac = search_config.elite_frac if search_config else 0.2
+        searcher = EliteSearch(self.search_request, eval_config, seed=seed)
+        scores, policies = searcher.search(max_iter, n_rounds, elite_frac=elite_frac)
+
+        return self._format_result(
+            ScoresHelper.top_k_scores(scores, policies, k),
+            ScoresHelper.top_k_policies(scores, policies, k),
+            k,
+        )
 
     def search(self, search_config: SearchConfig, eval_config=None):
         display_k = search_config.display_k
         search_k = search_config.search_k
         refine_k = search_config.refine_k
-        precise = search_config.precise
+        mode = search_config.mode
         n_rounds = search_config.n_rounds
         quick_mode = search_config.quick_mode
 
         if eval_config is None:
             eval_config = self.EVAL_CONFIG
         self._reset_diagnostics()
-        if precise:
+        if mode == "precise":
             search_results = self.precise_search(k=refine_k, n_rounds=n_rounds, quick_mode=quick_mode,
                                                  search_config=search_config, eval_config=eval_config)
-        else:
+        elif mode == "quick":
             t0 = time.perf_counter()
             search_results = self.quick_search(k=search_k, mode=quick_mode,
                                                search_config=search_config, eval_config=eval_config)
             if quick_mode == "stochastic":
                 self._diagnostics["global_stochastic_time"] += time.perf_counter() - t0
+        elif mode == "elite":
+            search_results = self.elite_search(k=search_k, search_config=search_config, eval_config=eval_config)
+        else:
+            raise ValueError(f"Unsupported search mode: {mode!r}")
         t0 = time.perf_counter()
         search_results = self.top_k_rerank_by_robustness(
             search_results,
