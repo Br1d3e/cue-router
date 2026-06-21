@@ -129,7 +129,7 @@ def create_pockets(ax):
     }
 
 
-def add_heatmap_target(ax, heatmap, alpha=0.8, cmap="viridis", colorbar=True):
+def add_heatmap_target(ax, heatmap, alpha=0.8, cmap="viridis", colorbar=True, vmin=0.0):
     scores = np.ma.masked_where(heatmap.scores <= 0, heatmap.scores)
     image = scores.T[:, ::-1]
     extent = (
@@ -144,7 +144,7 @@ def add_heatmap_target(ax, heatmap, alpha=0.8, cmap="viridis", colorbar=True):
         origin="lower",
         cmap=cmap,
         alpha=alpha,
-        vmin=0.4,
+        vmin=vmin,
         vmax=1.0,
         interpolation="bilinear",
     )
@@ -153,10 +153,10 @@ def add_heatmap_target(ax, heatmap, alpha=0.8, cmap="viridis", colorbar=True):
     return artist
 
 
-def show_heatmap_target(heatmap, layout=None, title="CueRouter Heatmap Target"):
+def show_heatmap_target(heatmap, layout=None, title="CueRouter Heatmap Target", target_region_thres=0.4):
     fig, ax = create_table_axes(table_color="none")
     create_pockets(ax)
-    add_heatmap_target(ax, heatmap)
+    add_heatmap_target(ax, heatmap, vmin=target_region_thres)
     ax.set_title(title)
 
     if layout is not None:

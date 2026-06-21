@@ -138,6 +138,31 @@ class HeatmapTarget(PositionTarget):
         heatmap.scores = np.clip(heatmap.scores, 0.0, 1.0)
         return heatmap
 
+    @classmethod
+    def from_grid_evaluator(
+            cls,
+            evaluator,
+            target_ball_pos,
+            target_pocket_id,
+            obstacles=None,
+            m=100,
+            n=50,
+            pocket_mask_radius=1.5 * ChineseTableSpecs.BALL_RADIUS,
+    ):
+        heatmap = cls(np.zeros((m, n), dtype=float), pocket_mask_radius=pocket_mask_radius)
+        cue_X, cue_Y = np.meshgrid(heatmap.x_coords, heatmap.y_coords)
+        valid_mask = heatmap.valid_position_mask(cue_X, cue_Y)
+        scores = evaluator(
+            cue_X,
+            cue_Y,
+            target_ball_pos,
+            target_pocket_id,
+            obstacles=obstacles,
+        )
+        heatmap.scores = np.where(valid_mask, scores, 0.0)
+        heatmap.scores = np.clip(heatmap.scores, 0.0, 1.0)
+        return heatmap
+
     def __post_init__(self):
         self.scores = np.asarray(self.scores, dtype=float)
         if self.scores.ndim != 2:
@@ -201,6 +226,9 @@ class HeatmapTarget(PositionTarget):
             return False
         return not self.is_in_physical_pocket((x, y))
 
+    def valid_position_mask(self, X, Y):
+        return ChineseTableSpecs.in_table_mask(X, Y) & ~self.in_physical_pocket_mask(X, Y)
+
     def is_in_physical_pocket(self, xy):
         xy = np.asarray(xy[:2], dtype=float)
         for pocket in ChineseTableSpecs.chinese_table.pockets.values():
@@ -208,6 +236,13 @@ class HeatmapTarget(PositionTarget):
             if np.linalg.norm(xy - pocket_xy) < self.pocket_mask_radius:
                 return True
         return False
+
+    def in_physical_pocket_mask(self, X, Y):
+        mask = np.zeros_like(X, dtype=bool)
+        for pocket in ChineseTableSpecs.chinese_table.pockets.values():
+            pocket_xy = np.asarray(pocket.center[:2], dtype=float)
+            mask |= (X - pocket_xy[0]) ** 2 + (Y - pocket_xy[1]) ** 2 < self.pocket_mask_radius ** 2
+        return mask
 
 
 

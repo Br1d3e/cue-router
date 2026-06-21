@@ -15,7 +15,7 @@ class PlannerConfig:
     playable_threshold: float = 0.25
     option_bonus_weight: float = 0.05
     top_heatmap_percent: float = 0.05
-    target_region_threshold: float = 0.4
+    target_region_threshold: float = 0.0
     future_position_contrast: float = 2.0
     max_cut_angle_deg: float = 80.0
     grid_m: int = 60
@@ -44,6 +44,14 @@ class PlannerSearch:
         options = []
 
         for target_ball_id in legal_targets:
+            future_balls = {ball_id: xy for ball_id, xy in balls.items() if ball_id != target_ball_id}
+            future_legal_targets = self._future_legal_targets(
+                balls,
+                legal_targets,
+                target_ball_id,
+            )
+            target_xy = balls[target_ball_id]
+            heatmap = self._build_future_heatmap(future_balls, future_legal_targets, target_xy)
             for target_pocket_id in ChineseTableSpecs.POCKET_ID:
                 option = self._build_shot_option(
                     cue_xy,
@@ -51,6 +59,7 @@ class PlannerSearch:
                     legal_targets,
                     target_ball_id,
                     target_pocket_id,
+                    heatmap=heatmap,
                 )
                 if option is not None:
                     options.append(option)
@@ -58,7 +67,7 @@ class PlannerSearch:
         k = self.config.display_k if display_k is None else display_k
         return sorted(options, key=lambda option: option.score, reverse=True)[:k]
 
-    def _build_shot_option(self, cue_xy, balls, legal_targets, target_ball_id, target_pocket_id):
+    def _build_shot_option(self, cue_xy, balls, legal_targets, target_ball_id, target_pocket_id, heatmap=None):
         target_xy = balls[target_ball_id]
         if not PlannerEvaluation.is_direct_candidate(
                 cue_xy,
@@ -75,13 +84,6 @@ class PlannerSearch:
             target_pocket_id,
             obstacles=balls,
         )
-        future_balls = {ball_id: xy for ball_id, xy in balls.items() if ball_id != target_ball_id}
-        future_legal_targets = self._future_legal_targets(
-            balls,
-            legal_targets,
-            target_ball_id,
-        )
-        heatmap = self._build_future_heatmap(future_balls, future_legal_targets, target_xy)
         future_position_value = heatmap.mean_top_fraction(self.config.top_heatmap_percent)
         score = current_pot_quality * future_position_value
 
@@ -103,8 +105,8 @@ class PlannerSearch:
         if self.config.lookahead_depth <= 0 or len(legal_targets) == 0:
             return self._terminal_heatmap()
 
-        return HeatmapTarget.from_evaluator(
-            self._future_position_value,
+        return HeatmapTarget.from_grid_evaluator(
+            self._future_position_value_vectorized,
             target_ball_pos=target_ball_pos,
             target_pocket_id=None,
             obstacles={
@@ -162,6 +164,50 @@ class PlannerSearch:
         distance_quality = self._cue_target_distance_quality(cue_xy, target_ball_pos)
         return float(position_value * distance_quality)
 
+    def _future_position_value_vectorized(self, cue_X, cue_Y, target_ball_pos, target_pocket_id, obstacles=None):
+        balls = obstacles["balls"]
+        legal_targets = obstacles["legal_targets"]
+        qualities = []
+
+        for ball_id in legal_targets:
+            if ball_id not in balls:
+                continue
+            for pocket_id in ChineseTableSpecs.POCKET_ID:
+                shot_quality = PlannerEvaluation.evaluate_position_grid(
+                    cue_X,
+                    cue_Y,
+                    balls[ball_id],
+                    pocket_id,
+                    obstacles=balls,
+                )
+                cut_angle_deg = PlannerEvaluation.cut_angle_deg_grid(
+                    cue_X,
+                    cue_Y,
+                    balls[ball_id],
+                    pocket_id,
+                )
+                qualities.append(np.where(
+                    cut_angle_deg < self.config.max_cut_angle_deg,
+                    shot_quality,
+                    0.0,
+                ))
+
+        if len(qualities) == 0:
+            return np.zeros_like(cue_X, dtype=float)
+
+        qualities = np.stack(qualities)
+        k = min(self.config.top_k_future_candidates, qualities.shape[0])
+        top_qualities = np.sort(qualities, axis=0)[-k:]
+        best = top_qualities[-1]
+        playable_count = np.sum(
+            (top_qualities > 0) & (top_qualities >= self.config.playable_threshold),
+            axis=0,
+        )
+        option_bonus = self.config.option_bonus_weight * np.log1p(np.maximum(0, playable_count - 1))
+        position_value = np.clip(best + option_bonus, 0.0, 1.0) ** self.config.future_position_contrast
+        distance_quality = self._cue_target_distance_quality_grid(cue_X, cue_Y, target_ball_pos)
+        return np.where(best > 0, position_value * distance_quality, 0.0)
+
     def _cue_target_distance_quality(self, cue_xy, target_ball_pos):
         if target_ball_pos is None:
             return 1.0
@@ -174,6 +220,21 @@ class PlannerSearch:
         decay = np.exp(-((excess / self.config.cue_target_distance_softness) ** 2))
         min_quality = self.config.cue_target_distance_min_quality
         return float(min_quality + (1.0 - min_quality) * decay)
+
+    def _cue_target_distance_quality_grid(self, cue_X, cue_Y, target_ball_pos):
+        if target_ball_pos is None:
+            return np.ones_like(cue_X, dtype=float)
+
+        target_xy = PlannerEvaluation._xy(target_ball_pos)
+        dist = np.sqrt((cue_X - target_xy[0]) ** 2 + (cue_Y - target_xy[1]) ** 2)
+        excess = np.maximum(0.0, dist - self.config.cue_target_distance_free)
+        decay = np.exp(-((excess / self.config.cue_target_distance_softness) ** 2))
+        min_quality = self.config.cue_target_distance_min_quality
+        return np.where(
+            excess == 0.0,
+            1.0,
+            min_quality + (1.0 - min_quality) * decay,
+        )
 
     def _future_legal_targets(self, balls, legal_targets, target_ball_id):
         future_legal_targets = [ball_id for ball_id in legal_targets if ball_id != target_ball_id]

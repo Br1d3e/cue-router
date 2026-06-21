@@ -49,6 +49,8 @@ class PatternSearch:
         self.target_region = search_request.target_region
         self.route_type = search_request.route_type
         self.eval_config = eval_config
+        self.candidate_simulations = 0
+        self.valid_potting_candidates = 0
 
     def search_once(self, init_score, policy: ShotAction, directions=DIRECTIONS,
                     step=STEP, improv_eps=IMPROVEMENT_EPS,
@@ -84,22 +86,29 @@ class PatternSearch:
                     route_type=self.route_type
                 )
             else:
-                new_score = shot_evaluator.evaluate_shot_norm(
+                new_score = shot_evaluator.evaluate_shot_strict(
                     new_shot,
                     self.target_ball_id,
                     self.target_pocket_id,
                     self.target_region,
                     route_type=self.route_type
                 )
+            self.candidate_simulations += 1
+            if new_score > 0:
+                self.valid_potting_candidates += 1
             new_policy = ShotAction(new_phi, new_V0, new_a, new_b, route_type=self.route_type)
 
             if new_score > best_score + improv_eps:
                 best_score = new_score
                 best_policy = new_policy
 
+        print(f"pattern search_once time used: \n{shot_evaluator.diagnostics}")
+
         return best_score, best_policy
 
     def search_n_rounds(self, init_score, policy: ShotAction, n_rounds=MAX_SEARCHES, improv_eps=IMPROVEMENT_EPS):
+        self.candidate_simulations = 0
+        self.valid_potting_candidates = 0
         best_score = init_score
         best_policy = policy
 

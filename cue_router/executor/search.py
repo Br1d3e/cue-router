@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import time
 
 import numpy as np
 
@@ -175,6 +176,7 @@ class PolicySearch:
 
     def __init__(self, search_request: SearchRequest):
         self.search_request = search_request
+        self._diagnostics = None
 
     def quick_search(self, k=5, mode="grid", search_config=None, eval_config=None):
         if mode not in ["grid", "stochastic"]:
@@ -190,7 +192,10 @@ class PolicySearch:
         seed = search_config.seed if search_config else 42
         max_iter = search_config.stochastic_max_iter if search_config else 1200
         sample_mode = search_config.sample_mode if search_config else "random"
-        scores, policies = StochasticSearch(self.search_request, eval_config, seed=seed).search(max_iter, sample_mode)
+        stochastic_search = StochasticSearch(self.search_request, eval_config, seed=seed)
+        scores, policies = stochastic_search.search(max_iter, sample_mode)
+        self._add_diagnostics_count("candidate_simulations", stochastic_search.candidate_simulations)
+        self._add_diagnostics_count("valid_potting_candidates", stochastic_search.valid_potting_candidates)
         return self._format_result(
             ScoresHelper.top_k_scores(scores, policies, k, rough_unique=True),
             ScoresHelper.top_k_policies(scores, policies, k, rough_unique=True),
@@ -199,6 +204,8 @@ class PolicySearch:
 
     def precise_search(self, k=5, n_rounds=PatternSearch.MAX_SEARCHES, quick_mode="grid",
                        search_config=None, eval_config=None):
+        if self._diagnostics is None:
+            self._reset_diagnostics()
         if quick_mode not in ["grid", "stochastic"]:
             raise ValueError(f"Invalid quick_search mode, {quick_mode!r}")
         if quick_mode == "grid":
@@ -207,16 +214,22 @@ class PolicySearch:
             seed = search_config.seed if search_config else 42
             max_iter = search_config.stochastic_max_iter if search_config else 1200
             sample_mode = search_config.sample_mode if search_config else "random"
+            t0 = time.perf_counter()
             top_scores, top_policies = self._top_k_from_stochastic(k, eval_config=eval_config, max_iter=max_iter,
                                                                    sample_mode=sample_mode, seed=seed)
+            self._diagnostics["global_stochastic_time"] += time.perf_counter() - t0
         pattern_search = PatternSearch(self.search_request, eval_config)
 
         refined_scores = []
         refined_policies = []
+        t0 = time.perf_counter()
         for score, policy in zip(top_scores, top_policies):
             refined_score, refined_policy = pattern_search.search_n_rounds(score, policy, n_rounds=n_rounds)
+            self._add_diagnostics_count("candidate_simulations", pattern_search.candidate_simulations)
+            self._add_diagnostics_count("valid_potting_candidates", pattern_search.valid_potting_candidates)
             refined_scores.append(refined_score)
             refined_policies.append(refined_policy)
+        self._diagnostics["pattern_search_time"] += time.perf_counter() - t0
 
         return self._format_result(
             ScoresHelper.top_k_scores(refined_scores, refined_policies, k),
@@ -235,17 +248,24 @@ class PolicySearch:
 
         if eval_config is None:
             eval_config = self.EVAL_CONFIG
+        self._reset_diagnostics()
         if precise:
             search_results = self.precise_search(k=refine_k, n_rounds=n_rounds, quick_mode=quick_mode,
                                                  search_config=search_config, eval_config=eval_config)
         else:
+            t0 = time.perf_counter()
             search_results = self.quick_search(k=search_k, mode=quick_mode,
                                                search_config=search_config, eval_config=eval_config)
+            if quick_mode == "stochastic":
+                self._diagnostics["global_stochastic_time"] += time.perf_counter() - t0
+        t0 = time.perf_counter()
         search_results = self.top_k_rerank_by_robustness(
             search_results,
             display_k,
             eval_config=eval_config,
         )
+        self._diagnostics["robustness_rerank_time"] += time.perf_counter() - t0
+        self._print_diagnostics()
         return search_results
 
     def _top_k_from_grid(self, k, eval_config=None):
@@ -253,7 +273,10 @@ class PolicySearch:
         return ScoresHelper.top_k_scores(scores, policies, k), ScoresHelper.top_k_policies(scores, policies, k)
 
     def _top_k_from_stochastic(self, k, max_iter=None, sample_mode=None, seed=42, eval_config=None,):
-        scores, policies = StochasticSearch(self.search_request, eval_config=eval_config, seed=seed).search(max_iter, sample_mode)
+        stochastic_search = StochasticSearch(self.search_request, eval_config=eval_config, seed=seed)
+        scores, policies = stochastic_search.search(max_iter, sample_mode)
+        self._add_diagnostics_count("candidate_simulations", stochastic_search.candidate_simulations)
+        self._add_diagnostics_count("valid_potting_candidates", stochastic_search.valid_potting_candidates)
         return (ScoresHelper.top_k_scores(scores, policies, k, rough_unique=True),
                 ScoresHelper.top_k_policies(scores, policies, k, rough_unique=True))
 
@@ -288,6 +311,29 @@ class PolicySearch:
             ScoresHelper.top_k_policies(final_scores, final_policies, k),
             k,
         )
+
+    def _reset_diagnostics(self):
+        self._diagnostics = {
+            "global_stochastic_time": 0.0,
+            "pattern_search_time": 0.0,
+            "robustness_rerank_time": 0.0,
+            "candidate_simulations": 0,
+            "valid_potting_candidates": 0,
+        }
+
+    def _add_diagnostics_count(self, key, value):
+        if self._diagnostics is not None:
+            self._diagnostics[key] += int(value)
+
+    def _print_diagnostics(self):
+        if self._diagnostics is None:
+            return
+        print("PolicySearch diagnostics:")
+        print(f"  global stochastic time: {self._diagnostics['global_stochastic_time']:.4f}s")
+        print(f"  pattern search time: {self._diagnostics['pattern_search_time']:.4f}s")
+        print(f"  robustness rerank time: {self._diagnostics['robustness_rerank_time']:.4f}s")
+        print(f"  candidate simulations: {self._diagnostics['candidate_simulations']}")
+        print(f"  valid potting candidates: {self._diagnostics['valid_potting_candidates']}")
 
 
     @staticmethod

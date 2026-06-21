@@ -21,17 +21,16 @@ PLANNER_CONFIG = PlannerConfig(
     display_k=3
 )
 LEGAL_TARGET_BALLS = [str(i) for i in range(1, 8)]
-TOP_K = 1
-SEARCH_ROUNDS = 3
+TOP_K = 5
 
 SEARCH_CONFIG = SearchConfig(
     display_k=TOP_K,
-    search_k=20,
-    refine_k=10,
+    search_k=10,
+    refine_k=5,
     precise=True,
     quick_mode="stochastic",
-    n_rounds=3,
-    stochastic_max_iter=800,
+    n_rounds=2,
+    stochastic_max_iter=600,
     sample_mode="LHS",
     seed=42,
 )
@@ -169,7 +168,7 @@ def planner_1_ball(shot):
 
 
 # Executes best plan + best route policy every time until clearance
-def planner_full(shot):
+def planner_full(shot, show_heatmap=False):
     shot = shot.copy()
     planner = PlannerSearch(PLANNER_CONFIG)
     legal_balls = LEGAL_TARGET_BALLS
@@ -180,7 +179,8 @@ def planner_full(shot):
         print(f"plan search time used, {time.time() - b4:.4f}")
         if len(plans) == 0:
             break
-        plan = plans[0]
+        plan_idx = 0
+        plan = plans[plan_idx]
 
         target_ball = plan.target_ball_id
         target_pocket = plan.target_pocket_id
@@ -189,7 +189,8 @@ def planner_full(shot):
         print("plan score:", plan.score)
         print(plan.score_breakdown)
 
-        show_heatmap_target(plan.target_region, layout=planner_layout)
+        if show_heatmap:
+            show_heatmap_target(plan.target_region, layout=planner_layout, target_region_thres=0.0)
 
         searcher = PolicySearch(plan.to_search_request(shot.copy()))
         b4 = time.time()
@@ -198,7 +199,21 @@ def planner_full(shot):
             eval_config=None,
         )
         print(f"route search time used, {time.time() - b4:.4f}")
-        best_score, best_policy = top_k_scores, top_k_policies
+
+        # fallback
+        while len(top_k_scores) <= 0:
+            plan_idx += 1
+            if plan_idx >= len(plan):
+                print(f"unable to find an executable plan")
+                break
+            plan = plans[plan_idx]
+            searcher = PolicySearch(plan.to_search_request(shot.copy()))
+            top_k_scores, top_k_policies = searcher.search(
+                search_config=SEARCH_CONFIG,
+                eval_config=None,
+            )
+
+        best_score, best_policy = top_k_scores[0], top_k_policies[0]
         if best_score is None:
             print("shot impossible")
             return
@@ -224,7 +239,7 @@ def main():
     elif VISUAL_SELECTOR == "planner":
         layout = select_planner_layout()
     else:
-        layout = manual_layout_2()
+        layout = manual_layout() if MODE == "executor" else manual_layout_2()
     print("Pool layout: \n", layout)
     if layout is None:
         raise RuntimeError("No pool layout selected.")
@@ -237,7 +252,7 @@ def main():
         route_search(layout)
     elif MODE == "planner":
         # planner_1_ball(layout, shot)
-        planner_full(shot)
+        planner_full(shot, True)
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@ import numpy as np
 from cue_router.core.table import ChineseTableSpecs
 from cue_router.executor.action import ShotAction
 
+import time
 
 class InvalidReason(Enum):
     FIRST_HIT_NOT_TARGET_BALL = auto()
@@ -86,6 +87,11 @@ class ShotEvaluation:
         self.cue_route_quality = np.nan
         self.route_robustness = np.nan
         self.score = np.nan
+
+        self.diagnostics = {
+            "pt_simulate": 0,
+            "score_calc": 0,
+        }
 
     def is_shot_valid(self, shot: pt.System, target_id, pocket_id, strict_mode) -> bool:
         if pt.ruleset.get_id_of_first_ball_hit(shot) != target_id:
@@ -410,9 +416,12 @@ class ShotEvaluation:
         near_miss_k = config.near_miss_k
         near_miss_limit = config.near_miss_limit
 
+        b4 = time.perf_counter()
         shot = shot.copy()
         pt.simulate(shot, inplace=True)
+        self.diagnostics["pt_simulate"] += time.perf_counter() - b4
 
+        b4 = time.perf_counter()
         if not self.is_shot_valid(shot, target_id, pocket_id, strict_mode):
             self.valid = False
             self.score = 0.0
@@ -435,6 +444,8 @@ class ShotEvaluation:
         else:
             self.target_near_miss_quality = 1
 
+        self.score = np.clip(self.score, 0, 1)
+        self.diagnostics["score_calc"] += time.perf_counter() - b4
         return self.score
 
     def evaluate_shot_norm(self, shot: pt.System, target_id, pocket_id, target_region,
@@ -471,6 +482,7 @@ class ShotEvaluation:
             config=config,
         )
         self.score = base_score * (1 - config.robustness_weight + config.robustness_weight * robustness)
+        self.score = np.clip(self.score, 0, 1)
         return self.score
 
     def print_score_breakdown(self):

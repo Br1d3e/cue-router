@@ -50,6 +50,15 @@ class ChineseTableSpecs:
                 0 + cls.BALL_RADIUS < y < cls.TABLE_LENGTH - cls.BALL_RADIUS)
 
     @classmethod
+    def in_table_mask(cls, X, Y):
+        return (
+            (cls.BALL_RADIUS < X)
+            & (X < cls.TABLE_WIDTH - cls.BALL_RADIUS)
+            & (cls.BALL_RADIUS < Y)
+            & (Y < cls.TABLE_LENGTH - cls.BALL_RADIUS)
+        )
+
+    @classmethod
     def pocket_id_to_idx(cls, pocket_id):
         pocket_id_to_idx = dict(zip(cls.POCKET_ID, list(range(len(cls.POCKET_ID)))))
         return pocket_id_to_idx[pocket_id]
@@ -61,5 +70,4 @@ class ChineseTableSpecs:
     @classmethod
     def pocket_pos_by_id(cls, pocket_id):
         return cls.POCKET_POS[cls.POCKET_ID.index(pocket_id)]
-
 
