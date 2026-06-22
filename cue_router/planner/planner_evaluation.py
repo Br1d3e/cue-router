@@ -39,6 +39,12 @@ class PlannerEvaluation:
     POSITION_OPTIMAL_CO_RANGE = (0.15, 0.6)
     POSITION_CO_CLOSE_SOFTNESS = 0.18
     POSITION_CO_FAR_SOFTNESS = 0.55
+    NEAR_CUSHION_DISTANCE = 0.1
+    TARGET_NEAR_CUSHION_MIN_QUALITY = 0.4
+    CUE_BACK_CUSHION_MIN_QUALITY = 0.65
+    BACK_SNOOKER_DISTANCE = 0.15
+    BACK_SNOOKER_CLEARANCE = 2.5 * ChineseTableSpecs.BALL_RADIUS
+    BACK_SNOOKER_MAX_PENALTY = 0.45
 
     @classmethod
     def evaluate_position(
@@ -139,7 +145,9 @@ class PlannerEvaluation:
             cos_gamma = abs(float(object_to_pocket[0] / v_op))
             pot_quality *= 0.65 + 0.35 * cos_gamma
 
-        pot_quality *= cls._cue_cushion_quality(cue_xy)
+        pot_quality *= cls._target_cushion_quality(target_xy)
+        pot_quality *= cls._cue_back_cushion_quality(cue_xy, cue_to_object)
+        pot_quality *= cls._back_snooker_quality(cue_xy, cue_to_object, obstacles, exclude=(cue_xy, target_xy))
         if pot_quality <= 0:
             return 0.0
         pot_quality = cls.MIN_PLAYABLE_QUALITY + (1 - cls.MIN_PLAYABLE_QUALITY) * pot_quality
@@ -217,7 +225,17 @@ class PlannerEvaluation:
             cos_gamma = abs(float(object_to_pocket[0] / v_op))
             pot_quality *= 0.65 + 0.35 * cos_gamma
 
-        pot_quality *= cls._cue_cushion_quality_grid(cue_X, cue_Y)
+        pot_quality *= cls._target_cushion_quality(target_xy)
+        pot_quality *= cls._cue_back_cushion_quality_grid(cue_X, cue_Y, cue_to_object_x, cue_to_object_y)
+        pot_quality *= cls._back_snooker_quality_grid(
+            cue_X,
+            cue_Y,
+            cue_to_object_x,
+            cue_to_object_y,
+            obstacles,
+            fixed_exclude=(target_xy,),
+            grid_exclude=((cue_X, cue_Y),),
+        )
         positive = valid & (pot_quality > 0)
         scores[positive] = (
             cls.MIN_PLAYABLE_QUALITY
@@ -448,6 +466,155 @@ class PlannerEvaluation:
             ChineseTableSpecs.TABLE_LENGTH - r - cue_Y,
         ])
         return np.clip(cushion_distance / cls.CUSHION_SAFE_DISTANCE, 0.0, 1.0)
+
+    @classmethod
+    def _target_cushion_quality(cls, target_xy):
+        cushion_distance = cls._nearest_cushion_distance(target_xy)
+        if cushion_distance >= cls.NEAR_CUSHION_DISTANCE:
+            return 1.0
+        t = np.clip(cushion_distance / cls.NEAR_CUSHION_DISTANCE, 0.0, 1.0)
+        return float(cls.TARGET_NEAR_CUSHION_MIN_QUALITY + (1.0 - cls.TARGET_NEAR_CUSHION_MIN_QUALITY) * t)
+
+    @classmethod
+    def _cue_back_cushion_quality(cls, cue_xy, cue_to_object):
+        v_co = np.linalg.norm(cue_to_object)
+        if v_co == 0:
+            return 0.0
+
+        back_dir = -cue_to_object / v_co
+        back_cushion_distance = cls._ray_to_cushion_distance(cue_xy, back_dir)
+        if back_cushion_distance >= cls.NEAR_CUSHION_DISTANCE:
+            return 1.0
+        t = np.clip(back_cushion_distance / cls.NEAR_CUSHION_DISTANCE, 0.0, 1.0)
+        return float(cls.CUE_BACK_CUSHION_MIN_QUALITY + (1.0 - cls.CUE_BACK_CUSHION_MIN_QUALITY) * t)
+
+    @classmethod
+    def _cue_back_cushion_quality_grid(cls, cue_X, cue_Y, cue_to_object_x, cue_to_object_y):
+        v_co = np.sqrt(cue_to_object_x ** 2 + cue_to_object_y ** 2)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            back_x = -cue_to_object_x / v_co
+            back_y = -cue_to_object_y / v_co
+
+        back_cushion_distance = cls._ray_to_cushion_distance_grid(cue_X, cue_Y, back_x, back_y)
+        t = np.clip(back_cushion_distance / cls.NEAR_CUSHION_DISTANCE, 0.0, 1.0)
+        quality = cls.CUE_BACK_CUSHION_MIN_QUALITY + (1.0 - cls.CUE_BACK_CUSHION_MIN_QUALITY) * t
+        return np.where(back_cushion_distance >= cls.NEAR_CUSHION_DISTANCE, 1.0, quality)
+
+    @classmethod
+    def _back_snooker_quality(cls, cue_xy, cue_to_object, obstacles, exclude=()):
+        v_co = np.linalg.norm(cue_to_object)
+        if v_co == 0:
+            return 0.0
+
+        back_dir = -cue_to_object / v_co
+        worst_severity = 0.0
+        for obstacle_xy in cls._obstacle_positions(obstacles):
+            if any(np.linalg.norm(obstacle_xy - cls._xy(point)) < ChineseTableSpecs.BALL_RADIUS for point in exclude):
+                continue
+            projection = float(np.dot(obstacle_xy - cue_xy, back_dir))
+            if projection <= 0 or projection > cls.BACK_SNOOKER_DISTANCE:
+                continue
+            closest = cue_xy + projection * back_dir
+            perpendicular = np.linalg.norm(obstacle_xy - closest)
+            if perpendicular >= cls.BACK_SNOOKER_CLEARANCE:
+                continue
+            line_severity = 1.0 - perpendicular / cls.BACK_SNOOKER_CLEARANCE
+            distance_severity = 1.0 - projection / cls.BACK_SNOOKER_DISTANCE
+            worst_severity = max(worst_severity, line_severity * distance_severity)
+
+        return float(1.0 - cls.BACK_SNOOKER_MAX_PENALTY * worst_severity)
+
+    @classmethod
+    def _back_snooker_quality_grid(
+            cls,
+            cue_X,
+            cue_Y,
+            cue_to_object_x,
+            cue_to_object_y,
+            obstacles,
+            fixed_exclude=(),
+            grid_exclude=(),
+    ):
+        v_co = np.sqrt(cue_to_object_x ** 2 + cue_to_object_y ** 2)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            back_x = -cue_to_object_x / v_co
+            back_y = -cue_to_object_y / v_co
+
+        worst_severity = np.zeros_like(cue_X, dtype=float)
+        for obstacle_xy in cls._obstacle_positions(obstacles):
+            exclude_mask = np.zeros_like(cue_X, dtype=bool)
+            skip_obstacle = False
+            for point in fixed_exclude:
+                if np.linalg.norm(obstacle_xy - cls._xy(point)) < ChineseTableSpecs.BALL_RADIUS:
+                    skip_obstacle = True
+                    break
+            if skip_obstacle:
+                continue
+
+            for grid_X, grid_Y in grid_exclude:
+                exclude_mask |= (
+                    (obstacle_xy[0] - grid_X) ** 2
+                    + (obstacle_xy[1] - grid_Y) ** 2
+                    < ChineseTableSpecs.BALL_RADIUS ** 2
+                )
+
+            projection = (obstacle_xy[0] - cue_X) * back_x + (obstacle_xy[1] - cue_Y) * back_y
+            closest_x = cue_X + projection * back_x
+            closest_y = cue_Y + projection * back_y
+            perpendicular = np.sqrt((obstacle_xy[0] - closest_x) ** 2 + (obstacle_xy[1] - closest_y) ** 2)
+            line_severity = 1.0 - perpendicular / cls.BACK_SNOOKER_CLEARANCE
+            distance_severity = 1.0 - projection / cls.BACK_SNOOKER_DISTANCE
+            severity = np.clip(line_severity, 0.0, 1.0) * np.clip(distance_severity, 0.0, 1.0)
+            blocked = (
+                ~exclude_mask
+                & (projection > 0)
+                & (projection <= cls.BACK_SNOOKER_DISTANCE)
+                & (perpendicular < cls.BACK_SNOOKER_CLEARANCE)
+            )
+            worst_severity = np.maximum(worst_severity, np.where(blocked, severity, 0.0))
+
+        return 1.0 - cls.BACK_SNOOKER_MAX_PENALTY * worst_severity
+
+    @classmethod
+    def _nearest_cushion_distance(cls, xy):
+        x, y = cls._xy(xy)
+        r = ChineseTableSpecs.BALL_RADIUS
+        return min(
+            x - r,
+            ChineseTableSpecs.TABLE_WIDTH - r - x,
+            y - r,
+            ChineseTableSpecs.TABLE_LENGTH - r - y,
+        )
+
+    @classmethod
+    def _ray_to_cushion_distance(cls, xy, direction):
+        x, y = cls._xy(xy)
+        dx, dy = direction
+        r = ChineseTableSpecs.BALL_RADIUS
+        distances = []
+        if dx < 0:
+            distances.append((x - r) / -dx)
+        elif dx > 0:
+            distances.append((ChineseTableSpecs.TABLE_WIDTH - r - x) / dx)
+        if dy < 0:
+            distances.append((y - r) / -dy)
+        elif dy > 0:
+            distances.append((ChineseTableSpecs.TABLE_LENGTH - r - y) / dy)
+        if len(distances) == 0:
+            return float("inf")
+        return float(max(0.0, min(distances)))
+
+    @classmethod
+    def _ray_to_cushion_distance_grid(cls, cue_X, cue_Y, dir_X, dir_Y):
+        r = ChineseTableSpecs.BALL_RADIUS
+        inf = np.full_like(cue_X, np.inf, dtype=float)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            left = np.where(dir_X < 0, (cue_X - r) / -dir_X, inf)
+            right = np.where(dir_X > 0, (ChineseTableSpecs.TABLE_WIDTH - r - cue_X) / dir_X, inf)
+            bottom = np.where(dir_Y < 0, (cue_Y - r) / -dir_Y, inf)
+            top = np.where(dir_Y > 0, (ChineseTableSpecs.TABLE_LENGTH - r - cue_Y) / dir_Y, inf)
+        distance = np.minimum.reduce([left, right, bottom, top])
+        return np.maximum(distance, 0.0)
 
     @staticmethod
     def _is_side_pocket(pocket_id) -> bool:

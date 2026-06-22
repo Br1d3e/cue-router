@@ -5,6 +5,7 @@ import numpy as np
 from cue_router.core.table import ChineseTableSpecs
 from cue_router.planner.planner_evaluation import PlannerEvaluation, ShotOption
 from cue_router.planner.position_value_map import ContinuationOption, PositionValueMap
+from cue_router.planner.problem_ball_profile import ProblemBallAnalyzer
 from cue_router.ui.layout import PlannerLayout
 
 @dataclass
@@ -32,6 +33,7 @@ class PlannerSearch:
 
     def __init__(self, config=None):
         self.config = config or PlannerConfig()
+        self.problem_profiles = {}
 
     def search(self, layout, legal_target_balls, display_k=None):
         if not isinstance(layout, PlannerLayout):
@@ -42,6 +44,13 @@ class PlannerSearch:
             for ball_id, pos in layout.balls_info.items()
         }
         legal_targets = [ball_id for ball_id in legal_target_balls if ball_id in balls]
+        self.problem_profiles = ProblemBallAnalyzer.analyze(
+            balls,
+            legal_targets,
+        )
+        for key, value in self.problem_profiles.items():
+            print(f"ball #{key}")
+            print(value)
         options = []
 
         for target_ball_id in legal_targets:
@@ -61,6 +70,7 @@ class PlannerSearch:
                     target_ball_id,
                     target_pocket_id,
                     value_map=value_map,
+                    problem_profile=self.problem_profiles.get(target_ball_id),
                 )
                 if option is not None:
                     options.append(option)
@@ -68,7 +78,16 @@ class PlannerSearch:
         k = self.config.display_k if display_k is None else display_k
         return sorted(options, key=lambda option: option.score, reverse=True)[:k]
 
-    def _build_shot_option(self, cue_xy, balls, legal_targets, target_ball_id, target_pocket_id, value_map=None):
+    def _build_shot_option(
+            self,
+            cue_xy,
+            balls,
+            legal_targets,
+            target_ball_id,
+            target_pocket_id,
+            value_map=None,
+            problem_profile=None,
+    ):
         target_xy = balls[target_ball_id]
         if not PlannerEvaluation.is_direct_candidate(
                 cue_xy,
@@ -107,6 +126,10 @@ class PlannerSearch:
                 "target_region_value": future_position_value,
                 "intended_next_shot": intended_next_shot_label,
                 "cut_angle_deg": PlannerEvaluation.cut_angle_deg(cue_xy, target_xy, target_pocket_id),
+                "problem_priority": 0.0 if problem_profile is None else problem_profile.problem_priority,
+                "is_problem_ball": False if problem_profile is None else problem_profile.is_hard,
+                "require_breakout": False if problem_profile is None else problem_profile.require_breakout,
+                "problem_reasons": () if problem_profile is None else problem_profile.reasons,
             },
         )
 

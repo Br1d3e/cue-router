@@ -8,7 +8,7 @@ class ShotAction:
     V0: float = 0.0
     a: float = 0.0
     b: float = 0.0
-    route_type: str = "direct"  # “direct" | "bank"
+    route_type: str = "direct"  # “direct" | "bank" | "breakout"
 
     def as_array(self):
         return np.asarray((self.phi, self.V0, self.a, self.b), dtype=float)
