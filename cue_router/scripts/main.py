@@ -25,7 +25,7 @@ TOP_K = 5
 
 SEARCH_CONFIG = SearchConfig(
     display_k=TOP_K,
-    search_k=5,
+    search_k=10,
     refine_k=5,
     mode="elite",
     quick_mode="stochastic",

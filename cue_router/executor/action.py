@@ -26,7 +26,7 @@ class ShotAction:
         if not isinstance(other, ShotAction):
             return False
         return (
-            (-1 <= self.phi - other.phi <= 1) and
+            (-2 <= self.phi - other.phi <= 2) and
             (-0.5 < self.V0 - other.V0 < 0.5) and
             (-0.15 < self.a - other.a < 0.15) and
             (-0.15 < self.b - other.b < 0.15)

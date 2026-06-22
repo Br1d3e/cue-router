@@ -104,7 +104,7 @@ class EliteSearch:
             n_exploit = int(round_budget * elite_frac) if len(all_scores) > 0 else 0
             n_explore = round_budget - n_exploit
 
-            explore = self.LHS_5d_samples(n_explore)
+            explore = self.rough_unique_samples(self.LHS_5d_samples(n_explore))
             exploit = self.sample_elite(all_scores, all_samples, n_exploit)
             if exploit is None:
                 round_samples = explore
@@ -171,7 +171,7 @@ class EliteSearch:
         if len(scores) == 0:
             return None
 
-        parent_scores, parent_samples = self._top_rough_unique(scores, samples, top_k)
+        parent_scores, parent_samples = self._top_unique(scores, samples, top_k)
         if len(parent_scores) == 0:
             return None
 
@@ -193,11 +193,39 @@ class EliteSearch:
     @staticmethod
     def _rough_equal_sample(sample_a, sample_b):
         return (
-            (-1 <= sample_a[0] - sample_b[0] <= 1)
+            (-2 <= sample_a[0] - sample_b[0] <= 2)
             and (-0.5 < sample_a[1] - sample_b[1] < 0.5)
             and (-0.15 < sample_a[2] - sample_b[2] < 0.15)
             and (-0.15 < sample_a[3] - sample_b[3] < 0.15)
         )
+
+    @staticmethod
+    def rough_unique_samples(samples):
+        samples = np.asarray(samples, dtype=float).reshape(-1, 4)
+        keep = np.ones(len(samples), dtype=bool)
+        for idx in range(len(samples)):
+            if not keep[idx]:
+                continue
+            diff = samples[idx + 1:] - samples[idx]
+            rough_equal = (
+                (diff[:, 0] >= -2.0)
+                & (diff[:, 0] <= 2.0)
+                & (diff[:, 1] > -0.5)
+                & (diff[:, 1] < 0.5)
+                & (diff[:, 2] > -0.15)
+                & (diff[:, 2] < 0.15)
+                & (diff[:, 3] > -0.15)
+                & (diff[:, 3] < 0.15)
+            )
+            keep[idx + 1:][rough_equal] = False
+        return samples[keep]
+
+    @staticmethod
+    def _top_unique(scores, samples, top_k):
+        top_idx = np.argsort(scores)[::-1][:top_k]
+        parent_scores = np.array(scores, dtype=float)[top_idx]
+        parent_samples = np.array(samples, dtype=float)[top_idx]
+        return parent_scores, parent_samples
 
     def _top_rough_unique(self, scores, samples, top_k):
         parent_scores = []
@@ -212,9 +240,10 @@ class EliteSearch:
                 break
         return np.asarray(parent_scores, dtype=float), np.asarray(parent_samples, dtype=float)
 
-    def _sample_parent_children(self, parents):
+    def _sample_parent_children(self, parents, scales=None):
         parents = np.asarray(parents, dtype=float).reshape(-1, 4)
-        scales = np.asarray([1.0, 0.5, 0.06, 0.06], dtype=float)
+        if scales is None:
+            scales = np.asarray([1.0, 0.5, 0.1, 0.1], dtype=float)
         children = parents + self.rng.normal(0.0, scales, size=parents.shape)
         if "bank" in self.route_type:
             children[:, 0] = np.clip(children[:, 0], -12.0, 12.0)

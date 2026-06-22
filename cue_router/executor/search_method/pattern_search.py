@@ -86,7 +86,7 @@ class PatternSearch:
                     route_type=self.route_type
                 )
             else:
-                new_score = shot_evaluator.evaluate_shot_strict(
+                new_score = shot_evaluator.evaluate_shot_norm(
                     new_shot,
                     self.target_ball_id,
                     self.target_pocket_id,

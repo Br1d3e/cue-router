@@ -91,14 +91,11 @@ class StochasticSearch:
             samples = self.random_samples(max_iterations)
         else:
             samples = self.LHS_5d_samples(max_iterations)
+        candidate_policies = self.rough_unique_policies(samples, phi0)
 
-        for sample in samples:
-            phi_offset, V0, a, b = sample
-            phi = phi0 + phi_offset
-
-            policy = ShotAction(phi, V0, a, b, route_type=self.route_type)
+        for policy in candidate_policies:
             new_shot = self.shot.copy()
-            new_shot.cue.set_state(V0=V0, a=a, b=b, phi=phi, theta=0.0)
+            new_shot.cue.set_state(V0=policy.V0, a=policy.a, b=policy.b, phi=policy.phi, theta=0.0)
 
             self.evaluator.evaluate_shot_strict(
                 new_shot,
@@ -136,6 +133,17 @@ class StochasticSearch:
 
         samples = np.column_stack((phi_offsets, V0, a_b))
         return samples[valid_spin]
+
+    def rough_unique_policies(self, samples, phi0):
+        print(f"[Stochastic search]: given samples: {len(samples)}")
+        policies = []
+        for phi_offset, V0, a, b in np.asarray(samples, dtype=float).reshape(-1, 4):
+            policy = ShotAction(phi0 + phi_offset, V0, a, b, route_type=self.route_type)
+            if any(existing.rough_equal(policy) for existing in policies):
+                continue
+            policies.append(policy)
+        print(f"[Stochastic search]: unique policies: {len(policies)}")
+        return policies
 
     def random_sample(self):
         samples = self.random_samples(1)
