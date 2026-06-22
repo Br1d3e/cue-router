@@ -15,10 +15,10 @@ from cue_router.planner.planner_search import PlannerSearch, PlannerConfig
 
 chinese_table = ChineseTableSpecs.chinese_table
 MODE = "planner"
-VISUAL_SELECTOR = "manual"
+VISUAL_SELECTOR = "planner"
 
 PLANNER_CONFIG = PlannerConfig(
-    display_k=3
+    display_k=5
 )
 LEGAL_TARGET_BALLS = [str(i) for i in range(1, 8)]
 TOP_K = 5
@@ -31,8 +31,8 @@ SEARCH_CONFIG = SearchConfig(
     quick_mode="stochastic",
     n_rounds=2,
     stochastic_max_iter=600,
-    elite_max_iter=400,
-    elite_frac=0.5,
+    elite_max_iter=500,
+    elite_frac=0.3,
     sample_mode="LHS",
     seed=42,
 )
@@ -177,7 +177,7 @@ def planner_full(shot, show_heatmap=False):
     planner_layout = PlannerLayout.from_shot(shot)
     while len(legal_balls) > 0:
         b4 = time.time()
-        plans = planner.search(planner_layout, legal_balls, display_k=1)
+        plans = planner.search(planner_layout, legal_balls, display_k=5)
         print(f"plan search time used, {time.time() - b4:.4f}")
         if len(plans) == 0:
             break
@@ -203,12 +203,20 @@ def planner_full(shot, show_heatmap=False):
         print(f"route search time used, {time.time() - b4:.4f}")
 
         # fallback
-        while len(top_k_scores) <= 0:
+        while len(top_k_scores) <= 0 or top_k_scores[0] <= 0.2:
             plan_idx += 1
-            if plan_idx >= len(plan):
+            if plan_idx >= len(plans):
                 print(f"unable to find an executable plan")
-                break
+                return
             plan = plans[plan_idx]
+            target_ball = plan.target_ball_id
+            target_pocket = plan.target_pocket_id
+            print(target_ball, target_pocket)
+            print("plan score:", plan.score)
+            print(plan.score_breakdown)
+            if show_heatmap:
+                show_heatmap_target(plan.target_region, layout=planner_layout, target_region_thres=0.0)
+
             searcher = PolicySearch(plan.to_search_request(shot.copy()))
             top_k_scores, top_k_policies = searcher.search(
                 search_config=SEARCH_CONFIG,
@@ -254,7 +262,7 @@ def main():
         route_search(layout)
     elif MODE == "planner":
         # planner_1_ball(layout, shot)
-        planner_full(shot, False)
+        planner_full(shot, True)
 
 
 if __name__ == "__main__":

@@ -2,9 +2,9 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from cue_router.core.geometry import HeatmapTarget
 from cue_router.core.table import ChineseTableSpecs
 from cue_router.planner.planner_evaluation import PlannerEvaluation, ShotOption
+from cue_router.planner.position_value_map import ContinuationOption, PositionValueMap
 from cue_router.ui.layout import PlannerLayout
 
 @dataclass
@@ -12,11 +12,12 @@ class PlannerConfig:
     display_k: int = 5
     lookahead_depth: int = 1
     top_k_future_candidates: int = 5
+    target_heatmap_k: int = 2
     playable_threshold: float = 0.25
     option_bonus_weight: float = 0.05
     top_heatmap_percent: float = 0.05
     target_region_threshold: float = 0.0
-    future_position_contrast: float = 2.0
+    future_position_contrast: float = 1.0
     max_cut_angle_deg: float = 80.0
     grid_m: int = 60
     grid_n: int = 30
@@ -51,7 +52,7 @@ class PlannerSearch:
                 target_ball_id,
             )
             target_xy = balls[target_ball_id]
-            heatmap = self._build_future_heatmap(future_balls, future_legal_targets, target_xy)
+            value_map = self._build_position_value_map(future_balls, future_legal_targets, target_xy)
             for target_pocket_id in ChineseTableSpecs.POCKET_ID:
                 option = self._build_shot_option(
                     cue_xy,
@@ -59,7 +60,7 @@ class PlannerSearch:
                     legal_targets,
                     target_ball_id,
                     target_pocket_id,
-                    heatmap=heatmap,
+                    value_map=value_map,
                 )
                 if option is not None:
                     options.append(option)
@@ -67,7 +68,7 @@ class PlannerSearch:
         k = self.config.display_k if display_k is None else display_k
         return sorted(options, key=lambda option: option.score, reverse=True)[:k]
 
-    def _build_shot_option(self, cue_xy, balls, legal_targets, target_ball_id, target_pocket_id, heatmap=None):
+    def _build_shot_option(self, cue_xy, balls, legal_targets, target_ball_id, target_pocket_id, value_map=None):
         target_xy = balls[target_ball_id]
         if not PlannerEvaluation.is_direct_candidate(
                 cue_xy,
@@ -84,29 +85,44 @@ class PlannerSearch:
             target_pocket_id,
             obstacles=balls,
         )
-        future_position_value = heatmap.mean_top_fraction(self.config.top_heatmap_percent)
+        target_region, future_position_value, intended_next_shot = value_map.select_best_target_heatmap(
+            threshold=self.config.target_region_threshold,
+            top_k=self.config.target_heatmap_k,
+            top_fraction=self.config.top_heatmap_percent,
+        )
         score = current_pot_quality * future_position_value
+        intended_next_shot_label = None
+        if len(intended_next_shot) > 0:
+            intended_next_shot_label = ", ".join(option.label() for option in intended_next_shot)
 
         return ShotOption(
             target_ball_id=target_ball_id,
             target_pocket_id=target_pocket_id,
-            target_region=heatmap.thresholded(self.config.target_region_threshold),
+            target_region=target_region,
             score=score,
             route_type="direct",
             score_breakdown={
                 "current_pot_quality": current_pot_quality,
                 "future_position_value": future_position_value,
                 "target_region_value": future_position_value,
+                "intended_next_shot": intended_next_shot_label,
                 "cut_angle_deg": PlannerEvaluation.cut_angle_deg(cue_xy, target_xy, target_pocket_id),
             },
         )
 
-    def _build_future_heatmap(self, balls, legal_targets, target_ball_pos):
+    def _build_position_value_map(self, balls, legal_targets, target_ball_pos):
         if self.config.lookahead_depth <= 0 or len(legal_targets) == 0:
-            return self._terminal_heatmap()
+            return self._terminal_value_map()
 
-        return HeatmapTarget.from_grid_evaluator(
+        candidates = [
+            ContinuationOption(ball_id, pocket_id, route_type="direct")
+            for ball_id in legal_targets
+            if ball_id in balls
+            for pocket_id in ChineseTableSpecs.POCKET_ID
+        ]
+        return PositionValueMap.from_grid_evaluator(
             self._future_position_value_vectorized,
+            candidates=candidates,
             target_ball_pos=target_ball_pos,
             target_pocket_id=None,
             obstacles={
@@ -116,110 +132,70 @@ class PlannerSearch:
             m=self.config.grid_m,
             n=self.config.grid_n,
             pocket_mask_radius=self.config.pocket_mask_radius,
+            top_fraction=self.config.top_heatmap_percent,
         )
 
-    def _terminal_heatmap(self):
-        return HeatmapTarget.from_evaluator(
-            lambda cue_xy, target_ball_pos, target_pocket_id, obstacles=None: 1.0,
-            target_ball_pos=None,
-            target_pocket_id=None,
+    def _terminal_value_map(self):
+        return PositionValueMap.terminal(
             m=self.config.grid_m,
             n=self.config.grid_n,
             pocket_mask_radius=self.config.pocket_mask_radius,
         )
 
-    def _future_position_value(self, cue_xy, target_ball_pos, target_pocket_id, obstacles=None):
+    def _future_position_value_vectorized(
+            self,
+            cue_X,
+            cue_Y,
+            target_ball_pos,
+            target_pocket_id,
+            candidates=(),
+            obstacles=None,
+    ):
         balls = obstacles["balls"]
-        legal_targets = obstacles["legal_targets"]
         qualities = []
 
-        for ball_id in legal_targets:
-            if ball_id not in balls:
+        for candidate in candidates:
+            if candidate.target_ball_id not in balls:
                 continue
-            for pocket_id in ChineseTableSpecs.POCKET_ID:
-                if not PlannerEvaluation.is_direct_candidate(
-                        cue_xy,
-                        balls[ball_id],
-                        pocket_id,
-                        obstacles=balls,
-                        max_cut_angle_deg=self.config.max_cut_angle_deg,
-                ):
-                    continue
-                shot_ease = PlannerEvaluation.evaluate_position(
-                    cue_xy,
-                    balls[ball_id],
-                    pocket_id,
-                    obstacles=balls,
-                )
-                qualities.append(shot_ease)
+            shot_quality = PlannerEvaluation.evaluate_position_grid(
+                cue_X,
+                cue_Y,
+                balls[candidate.target_ball_id],
+                candidate.target_pocket_id,
+                obstacles=balls,
+            )
+            cut_angle_deg = PlannerEvaluation.cut_angle_deg_grid(
+                cue_X,
+                cue_Y,
+                balls[candidate.target_ball_id],
+                candidate.target_pocket_id,
+            )
+            qualities.append(np.where(
+                cut_angle_deg < self.config.max_cut_angle_deg,
+                shot_quality,
+                0.0,
+            ))
 
         if len(qualities) == 0:
-            return 0.0
+            return np.zeros((0, *cue_X.shape), dtype=float)
 
-        qualities = sorted(qualities, reverse=True)[:self.config.top_k_future_candidates]
-        best = qualities[0]
-        playable_count = sum(q >= self.config.playable_threshold for q in qualities)
-        option_bonus = self.config.option_bonus_weight * np.log1p(max(0, playable_count - 1))
-        position_value = np.clip(best + option_bonus, 0.0, 1.0) ** self.config.future_position_contrast
-        distance_quality = self._cue_target_distance_quality(cue_xy, target_ball_pos)
-        return float(position_value * distance_quality)
-
-    def _future_position_value_vectorized(self, cue_X, cue_Y, target_ball_pos, target_pocket_id, obstacles=None):
-        balls = obstacles["balls"]
-        legal_targets = obstacles["legal_targets"]
-        qualities = []
-
-        for ball_id in legal_targets:
-            if ball_id not in balls:
-                continue
-            for pocket_id in ChineseTableSpecs.POCKET_ID:
-                shot_quality = PlannerEvaluation.evaluate_position_grid(
-                    cue_X,
-                    cue_Y,
-                    balls[ball_id],
-                    pocket_id,
-                    obstacles=balls,
-                )
-                cut_angle_deg = PlannerEvaluation.cut_angle_deg_grid(
-                    cue_X,
-                    cue_Y,
-                    balls[ball_id],
-                    pocket_id,
-                )
-                qualities.append(np.where(
-                    cut_angle_deg < self.config.max_cut_angle_deg,
-                    shot_quality,
-                    0.0,
-                ))
-
-        if len(qualities) == 0:
-            return np.zeros_like(cue_X, dtype=float)
-
-        qualities = np.stack(qualities)
-        k = min(self.config.top_k_future_candidates, qualities.shape[0])
-        top_qualities = np.sort(qualities, axis=0)[-k:]
+        raw_value_grid = np.stack(qualities)
+        k = min(self.config.top_k_future_candidates, raw_value_grid.shape[0])
+        top_qualities = np.sort(raw_value_grid, axis=0)[-k:]
         best = top_qualities[-1]
         playable_count = np.sum(
             (top_qualities > 0) & (top_qualities >= self.config.playable_threshold),
             axis=0,
         )
         option_bonus = self.config.option_bonus_weight * np.log1p(np.maximum(0, playable_count - 1))
-        position_value = np.clip(best + option_bonus, 0.0, 1.0) ** self.config.future_position_contrast
         distance_quality = self._cue_target_distance_quality_grid(cue_X, cue_Y, target_ball_pos)
-        return np.where(best > 0, position_value * distance_quality, 0.0)
-
-    def _cue_target_distance_quality(self, cue_xy, target_ball_pos):
-        if target_ball_pos is None:
-            return 1.0
-
-        dist = np.linalg.norm(PlannerEvaluation._xy(cue_xy) - PlannerEvaluation._xy(target_ball_pos))
-        excess = max(0.0, dist - self.config.cue_target_distance_free)
-        if excess == 0.0:
-            return 1.0
-
-        decay = np.exp(-((excess / self.config.cue_target_distance_softness) ** 2))
-        min_quality = self.config.cue_target_distance_min_quality
-        return float(min_quality + (1.0 - min_quality) * decay)
+        value_grid = np.where(
+            raw_value_grid > 0,
+            (np.clip(raw_value_grid + option_bonus, 0.0, 1.0) ** self.config.future_position_contrast)
+            * distance_quality,
+            0.0,
+        )
+        return value_grid
 
     def _cue_target_distance_quality_grid(self, cue_X, cue_Y, target_ball_pos):
         if target_ball_pos is None:

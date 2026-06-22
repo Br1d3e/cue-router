@@ -15,7 +15,7 @@ class ShotOption:
     target_region: PositionTarget
     score: float
     route_type: str = "direct"
-    score_breakdown: dict[str, float] = field(default_factory=dict)
+    score_breakdown: dict[str, object] = field(default_factory=dict)
 
     def to_search_request(self, shot):
         return SearchRequest(
