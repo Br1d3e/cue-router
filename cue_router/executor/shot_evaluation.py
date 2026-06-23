@@ -550,6 +550,10 @@ class ShotEvaluation:
             raise ValueError(f"config must be instance of ShotScoreConfig, got {type(config)!r} instead.")
         if not isinstance(breakout_target, BreakoutTarget):
             raise ValueError(f"breakout_target must be BreakoutTarget, got {type(breakout_target)!r} instead.")
+        if shot.cue.V0 < breakout_target.min_v0:
+            self.valid = False
+            self.score = 0.0
+            return 0.0
 
         b4 = time.perf_counter()
         shot = shot.copy()

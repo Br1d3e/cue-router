@@ -3,6 +3,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from cue_router.core.table import ChineseTableSpecs
+from cue_router.planner.breakout_planner import BreakoutPlanner
 from cue_router.planner.planner_evaluation import PlannerEvaluation, ShotOption
 from cue_router.planner.position_value_map import ContinuationOption, PositionValueMap
 from cue_router.planner.problem_ball_profile import ProblemBallAnalyzer
@@ -23,9 +24,19 @@ class PlannerConfig:
     grid_m: int = 60
     grid_n: int = 30
     pocket_mask_radius: float = 1.5 * ChineseTableSpecs.BALL_RADIUS
-    cue_target_distance_free: float = 0.45
-    cue_target_distance_softness: float = 0.65
+    cue_target_distance_free: float = 0.45      # cue ball positioning distance penalty
+    cue_target_distance_softness: float = 0.55
     cue_target_distance_min_quality: float = 0.75
+    normal_position_weight: float = 0.8
+    breakout_position_weight: float = 1.9
+    breakout_shot_weight: float = 3.8
+    problem_priority_weight: float = 2.0
+    breakout_problem_priority_threshold: float = 0.5    # min priority value for a problem ball to be considered dead
+    breakout_problem_top_k: int = 6
+    breakout_helper_top_k: int = 4
+    breakout_shot_min_pot_quality: float = 0.3
+    breakout_shot_min_geometry_quality: float = 0.25
+    breakout_position_threshold: float = 0.08
 
 
 class PlannerSearch:
@@ -52,6 +63,13 @@ class PlannerSearch:
             print(f"ball #{key}")
             print(value)
         options = []
+        options.extend(BreakoutPlanner.build_breakout_shot_options(
+            cue_xy,
+            balls,
+            legal_targets,
+            self.problem_profiles,
+            self.config,
+        ))
 
         for target_ball_id in legal_targets:
             future_balls = {ball_id: xy for ball_id, xy in balls.items() if ball_id != target_ball_id}
@@ -74,6 +92,16 @@ class PlannerSearch:
                 )
                 if option is not None:
                     options.append(option)
+                    options.extend(BreakoutPlanner.build_breakout_position_options(
+                        cue_xy,
+                        balls,
+                        legal_targets,
+                        self.problem_profiles,
+                        target_ball_id,
+                        target_pocket_id,
+                        option.score_breakdown["current_pot_quality"],
+                        self.config,
+                    ))
 
         k = self.config.display_k if display_k is None else display_k
         return sorted(options, key=lambda option: option.score, reverse=True)[:k]
@@ -109,7 +137,7 @@ class PlannerSearch:
             top_k=self.config.target_heatmap_k,
             top_fraction=self.config.top_heatmap_percent,
         )
-        score = current_pot_quality * future_position_value
+        score = current_pot_quality * future_position_value * self.config.normal_position_weight
         intended_next_shot_label = None
         if len(intended_next_shot) > 0:
             intended_next_shot_label = ", ".join(option.label() for option in intended_next_shot)
@@ -120,7 +148,9 @@ class PlannerSearch:
             target_region=target_region,
             score=score,
             route_type="direct",
+            option_family="normal_position",
             score_breakdown={
+                "option_family": "normal_position",
                 "current_pot_quality": current_pot_quality,
                 "future_position_value": future_position_value,
                 "target_region_value": future_position_value,

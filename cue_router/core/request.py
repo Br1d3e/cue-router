@@ -23,6 +23,7 @@ class BreakoutTarget:
     path_region: PositionTarget | None = None
     path_region_weight: float = 0.25
     preferred_side: Literal["left", "right", "auto"] | None = None
+    min_v0: float = 2.5
 
 
 @dataclass

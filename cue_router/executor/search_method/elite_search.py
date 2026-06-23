@@ -45,6 +45,10 @@ class EliteSearch:
         self.target_region = search_request.position_target
         self.route_type = search_request.route_type
         self.route_value = ShotEvaluation._route_value(self.route_type)
+        self.min_v0 = 0.25
+        objective = search_request.objective.value if hasattr(search_request.objective, "value") else search_request.objective
+        if objective == ShotObjective.BREAKOUT.value and search_request.breakout_target is not None:
+            self.min_v0 = search_request.breakout_target.min_v0
         self.scores = np.asarray([], dtype=float)
         self.policies = np.asarray([], dtype=object)
         self.rng = np.random.default_rng(seed)
@@ -127,13 +131,15 @@ class EliteSearch:
         return np.asarray(policies, dtype=object)
 
 
-    def LHS_5d_samples(self, size):
+    def LHS_5d_samples(self, size, l_bounds=None, u_bounds=None):
         if size <= 0:
             return np.empty((0, 4), dtype=float)
         sampler = qmc.LatinHypercube(d=5, optimization="random-cd", rng=self.rng)
         sample = sampler.random(n=size)
-        l_bounds = [-8, 1, 0, -0.1, -0.1]
-        u_bounds = [8, 5, 9, 0.1, 0.1]
+        if l_bounds is None:
+            l_bounds = [-8, self.min_v0, 0, -0.1, -0.1]
+        if u_bounds is None:
+            u_bounds = [8, 5, 9, 0.1, 0.1]
         if "bank" in self.route_value:
             l_bounds[0] = -12
             u_bounds[0] = 12
@@ -153,10 +159,9 @@ class EliteSearch:
         samples = np.column_stack((phi_offsets, V0, a_b))
         return samples[valid_spin]
 
-    @staticmethod
-    def _valid_sample_mask(samples):
+    def _valid_sample_mask(self, samples):
         return (
-                ShotAction.valid_V0_mask(samples[:, 1])
+                ShotAction.valid_V0_mask(samples[:, 1], low=self.min_v0)
                 & ShotAction.valid_spin_mask(samples[:, 2:])
         )
 

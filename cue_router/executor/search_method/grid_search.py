@@ -1,6 +1,7 @@
 import numpy as np
 
 from cue_router.core.geometry import Geometry
+from cue_router.core.request import ShotObjective
 from cue_router.executor.action import ShotAction
 from cue_router.executor.shot_evaluation import ShotEvaluation, ShotScoreConfig
 
@@ -48,6 +49,10 @@ class GridSearch:
         target_pocket_id = search_request.target_pocket_id
         route_type = search_request.route_type
         route_value = ShotEvaluation._route_value(route_type)
+        objective = search_request.objective.value if hasattr(search_request.objective, "value") else search_request.objective
+        min_v0 = 0.25
+        if objective == ShotObjective.BREAKOUT.value and search_request.breakout_target is not None:
+            min_v0 = search_request.breakout_target.min_v0
         target_ball = shot.balls.get(target_ball_id)
         cue_ball = shot.balls.get(shot.cue.cue_ball_id)
 
@@ -71,6 +76,7 @@ class GridSearch:
         scores = []
         policies = []
         shot_evaluator = ShotEvaluation(config=eval_config)
+        v0_values = [V0 for V0 in v0_values if V0 >= min_v0]
 
         for a, b in side_seeds:
             for V0 in v0_values:

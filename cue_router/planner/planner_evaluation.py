@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from cue_router.core.geometry import HeatmapTarget, PositionTarget
-from cue_router.core.request import SearchRequest
+from cue_router.core.request import BreakoutTarget, SearchRequest, ShotObjective
 from cue_router.core.table import ChineseTableSpecs
 
 
@@ -12,10 +12,17 @@ from cue_router.core.table import ChineseTableSpecs
 class ShotOption:
     target_ball_id: str
     target_pocket_id: str
-    target_region: PositionTarget
+    target_region: PositionTarget | None
     score: float
     route_type: str = "direct"
+    objective: ShotObjective | str = ShotObjective.POSITION
+    breakout_target: BreakoutTarget | None = None
+    option_family: str = "normal_position"
     score_breakdown: dict[str, object] = field(default_factory=dict)
+
+    @property
+    def position_target(self):
+        return self.target_region
 
     def to_search_request(self, shot):
         return SearchRequest(
@@ -24,6 +31,8 @@ class ShotOption:
             target_pocket_id=self.target_pocket_id,
             position_target=self.target_region,
             route_type=self.route_type,
+            objective=self.objective,
+            breakout_target=self.breakout_target,
         )
 
 

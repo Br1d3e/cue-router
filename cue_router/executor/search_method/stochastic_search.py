@@ -48,6 +48,10 @@ class StochasticSearch:
         self.target_region = search_request.position_target
         self.route_type = search_request.route_type
         self.route_value = ShotEvaluation._route_value(self.route_type)
+        self.min_v0 = 0.25
+        objective = search_request.objective.value if hasattr(search_request.objective, "value") else search_request.objective
+        if objective == ShotObjective.BREAKOUT.value and search_request.breakout_target is not None:
+            self.min_v0 = search_request.breakout_target.min_v0
         self.scores = np.asarray([], dtype=float)
         self.policies = np.asarray([], dtype=object)
         self.rng = np.random.default_rng(seed)
@@ -143,8 +147,9 @@ class StochasticSearch:
         valid_spin = ShotAction.valid_spin_mask(a_b)
 
         phi_offsets = self.rng.uniform(-8, 8, size=size)
-        discrete_v0 = self.rng.choice([1.5, 2.5, 3.5, 4.5], size)
-        random_v0 = self.rng.uniform(1.0, 5.0, size=size)
+        discrete_values = [v for v in [1.5, 2.5, 3.5, 4.5] if v >= self.min_v0]
+        discrete_v0 = self.rng.choice(discrete_values, size)
+        random_v0 = self.rng.uniform(self.min_v0, 5.0, size=size)
         V0 = np.where(self.rng.random(size) < 0.7, discrete_v0, random_v0)
 
         samples = np.column_stack((phi_offsets, V0, a_b))
@@ -172,7 +177,7 @@ class StochasticSearch:
         a0, b0 = spin
         sampler = qmc.LatinHypercube(d=4, optimization="random-cd", rng=self.rng)
         sample = sampler.random(n=1)
-        l_bounds = [-8, 1, -0.1, -0.1]
+        l_bounds = [-8, self.min_v0, -0.1, -0.1]
         u_bounds = [8, 5, 0.1, 0.1]
         if "bank" in self.route_value:
             l_bounds[0] = -12
@@ -187,11 +192,13 @@ class StochasticSearch:
 
         return phi_offset, V0, a, b
 
-    def LHS_5d_samples(self, size):
+    def LHS_5d_samples(self, size, l_bounds=None, u_bounds=None):
         sampler = qmc.LatinHypercube(d=5, optimization="random-cd", rng=self.rng)
         sample = sampler.random(n=size)
-        l_bounds = [-8, 1, 0, -0.1, -0.1]
-        u_bounds = [8, 5, 9, 0.1, 0.1]
+        if l_bounds is None:
+            l_bounds = [-8, self.min_v0, 0, -0.1, -0.1]
+        if u_bounds is None:
+            u_bounds = [8, 5, 9, 0.1, 0.1]
         if "bank" in self.route_value:
             l_bounds[0] = -12
             u_bounds[0] = 12

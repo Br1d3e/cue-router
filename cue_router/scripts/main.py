@@ -14,8 +14,8 @@ from cue_router.core.request import BreakoutTarget, SearchRequest
 from cue_router.planner.planner_search import PlannerSearch, PlannerConfig
 
 chinese_table = ChineseTableSpecs.chinese_table
-MODE = "breakout"
-VISUAL_SELECTOR = "manual"
+MODE = "planner"
+VISUAL_SELECTOR = "planner"
 
 PLANNER_CONFIG = PlannerConfig(
     display_k=5
@@ -31,8 +31,8 @@ SEARCH_CONFIG = SearchConfig(
     quick_mode="stochastic",
     n_rounds=2,
     stochastic_max_iter=600,
-    elite_max_iter=500,
-    elite_frac=0.3,
+    elite_max_iter=600,
+    elite_frac=0.4,
     sample_mode="LHS",
     seed=42,
 )
@@ -251,8 +251,8 @@ def planner_full(shot, show_heatmap=False):
         print("plan score:", plan.score)
         print(plan.score_breakdown)
 
-        if show_heatmap:
-            show_heatmap_target(plan.position_target, layout=planner_layout, target_region_thres=0.0)
+        if show_heatmap and plan.target_region is not None:
+            show_heatmap_target(plan.target_region, layout=planner_layout, target_region_thres=0.0)
 
         searcher = PolicySearch(plan.to_search_request(shot.copy()))
         b4 = time.time()
@@ -274,8 +274,8 @@ def planner_full(shot, show_heatmap=False):
             print(target_ball, target_pocket)
             print("plan score:", plan.score)
             print(plan.score_breakdown)
-            if show_heatmap:
-                show_heatmap_target(plan.position_target, layout=planner_layout, target_region_thres=0.0)
+            if show_heatmap and plan.target_region is not None:
+                show_heatmap_target(plan.target_region, layout=planner_layout, target_region_thres=0.0)
 
             searcher = PolicySearch(plan.to_search_request(shot.copy()))
             top_k_scores, top_k_policies = searcher.search(

@@ -50,6 +50,9 @@ class PatternSearch:
         self.route_type = search_request.route_type
         self.route_value = ShotEvaluation._route_value(self.route_type)
         self.search_request = search_request
+        self.min_v0 = 0.25
+        if search_request.breakout_target is not None:
+            self.min_v0 = search_request.breakout_target.min_v0
         self.eval_config = eval_config
         self.candidate_simulations = 0
         self.valid_potting_candidates = 0
@@ -74,6 +77,8 @@ class PatternSearch:
             if not ShotAction.is_spin_possible(new_a, new_b):
                 continue
             if not ShotAction.is_V0_possible(new_V0):
+                continue
+            if new_V0 < self.min_v0:
                 continue
 
             new_shot = self.shot.copy()
