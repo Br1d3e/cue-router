@@ -319,13 +319,7 @@ class PolicySearch:
                 a=policy.a,
                 b=policy.b
             )
-            new_score = evaluator.evaluate_shot_final(
-                top_shot,
-                self.search_request.target_ball_id,
-                self.search_request.target_pocket_id,
-                self.search_request.target_region,
-                config=eval_config
-            )
+            new_score = evaluator.evaluate_request_final(top_shot, self.search_request, config=eval_config)
             final_scores.append(new_score)
             final_policies.append(policy)
 

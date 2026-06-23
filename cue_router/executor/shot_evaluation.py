@@ -4,6 +4,7 @@ import pooltool as pt
 import numpy as np
 
 from cue_router.core.table import ChineseTableSpecs
+from cue_router.core.request import BreakoutTarget, SearchRequest, ShotObjective
 from cue_router.executor.action import ShotAction
 
 import time
@@ -81,6 +82,7 @@ class ShotEvaluation:
         self.valid = True
         self.invalid_reason = None
         self.position_quality = np.nan
+        self.breakout_quality = np.nan
         self.target_route_quality = np.nan
         self.cue_action_ease = np.nan
         self.target_near_miss_quality = np.nan
@@ -107,6 +109,14 @@ class ShotEvaluation:
             self.invalid_reason = InvalidReason.TARGET_NOT_IN_CORRECT_POCKET
             return False
         return True
+
+    @staticmethod
+    def _route_value(route_type):
+        return route_type.value if hasattr(route_type, "value") else route_type
+
+    @staticmethod
+    def _objective_value(objective):
+        return objective.value if hasattr(objective, "value") else objective
 
     @staticmethod
     def events_before_target_pocket(shot: pt.System, target_id, pocket_id):
@@ -304,6 +314,7 @@ class ShotEvaluation:
         b = self.target_ball_collision_count(shot, target_id, pocket_id)
         c = self.target_cushions_count(shot, target_id, pocket_id)
 
+        route_type = self._route_value(route_type)
         return 0.1 + 0.9 * (np.exp(-(k_b * b + k_c * abs(c - desired_c[route_type]))))
 
     def get_cue_action_ease(self, shot: pt.System, k=0.5) -> float:
@@ -336,6 +347,91 @@ class ShotEvaluation:
         cbb = self.cue_ball_collision_count(shot, target_id)
         cc = self.cue_pocket_cushion_count(shot)
         return 0.5 + 0.5 / (1 + (k_1 * cbb + k_2 * (pc ** 3) + k_3 * (cc ** 3)))
+
+    @staticmethod
+    def _ball_path_xy(shot: pt.System, ball_id: str):
+        ball = shot.balls[ball_id]
+        points = [np.asarray(ball.xyz[:2], dtype=float)]
+        for state in ball.history_cts:
+            points.append(np.asarray(state.rvw[0, :2], dtype=float))
+        return points
+
+    @staticmethod
+    def _min_ball_path_distance(shot: pt.System, ball_id: str, xy, continuize=False):
+        if continuize and len(shot.balls[ball_id].history_cts) == 0:
+            pt.continuize(shot, inplace=True)
+        target_xy = np.asarray(xy[:2], dtype=float)
+        min_d = float("inf")
+        for ball_xy in ShotEvaluation._ball_path_xy(shot, ball_id):
+            min_d = min(min_d, float(np.linalg.norm(ball_xy - target_xy)))
+        return min_d
+
+    def get_breakout_path_region_quality(self, shot: pt.System, breakout_target: BreakoutTarget, k=None):
+        if breakout_target.path_region is None:
+            return 0.0
+        if k is None:
+            k = self.config.position_k
+        cue_id = shot.cue.cue_ball_id
+        if len(shot.balls[cue_id].history_cts) == 0:
+            pt.continuize(shot, inplace=True)
+        best = 0.0
+        for cue_xy in self._ball_path_xy(shot, cue_id):
+            best = max(best, breakout_target.path_region.position_quality(cue_xy, position_k=k))
+        return float(np.clip(best, 0.0, 1.0))
+
+    def get_breakout_near_miss_quality(self, shot: pt.System, breakout_target: BreakoutTarget, k=30, limit=0.4):
+        if k is None:
+            k = 30
+        if limit is None:
+            limit = 0.4
+        cue_id = shot.cue.cue_ball_id
+        dead_ball = shot.balls.get(breakout_target.ball_id)
+        if dead_ball is None:
+            return 0.0
+        d = self._min_ball_path_distance(shot, cue_id, dead_ball.xyz[:2], continuize=True)
+        contact_gap = max(0.0, d - 2 * ChineseTableSpecs.BALL_RADIUS)
+        return float(limit / (1 + k * contact_gap))
+
+    @staticmethod
+    def breakout_collision_quality(shot: pt.System, target_id, breakout_target: BreakoutTarget) -> tuple[float, str | None]:
+        cue_id = shot.cue.cue_ball_id
+        dead_id = breakout_target.ball_id
+        if dead_id not in shot.balls:
+            return 0.0, None
+
+        first_target_contact_seen = False
+        chain_depth = {cue_id: 0, target_id: 0}
+        max_depth = breakout_target.max_chain_collisions
+
+        for e in shot.events:
+            if e.event_type != pt.EventType.BALL_BALL:
+                continue
+            ids = list(e.ids)
+            if len(ids) < 2:
+                continue
+            a_id, b_id = ids[0], ids[1]
+
+            if not first_target_contact_seen:
+                if cue_id in ids and target_id in ids:
+                    first_target_contact_seen = True
+                else:
+                    continue
+
+            if cue_id in ids and dead_id in ids:
+                return 1.0, "direct"
+
+            a_depth = chain_depth.get(a_id)
+            b_depth = chain_depth.get(b_id)
+            if a_depth is not None and b_depth is None:
+                chain_depth[b_id] = a_depth + 1
+            elif b_depth is not None and a_depth is None:
+                chain_depth[a_id] = b_depth + 1
+
+            dead_depth = chain_depth.get(dead_id)
+            if dead_depth is not None and 1 <= dead_depth <= max_depth:
+                return 1.0, "indirect"
+
+        return 0.0, None
 
     def get_route_robustness(
             self,
@@ -448,6 +544,75 @@ class ShotEvaluation:
         self.diagnostics["score_calc"] += time.perf_counter() - b4
         return self.score
 
+    def evaluate_breakout(self, shot: pt.System, target_id, pocket_id, breakout_target: BreakoutTarget,
+                          strict_mode, config, route_type="direct") -> float:
+        if not isinstance(config, ShotScoreConfig):
+            raise ValueError(f"config must be instance of ShotScoreConfig, got {type(config)!r} instead.")
+        if not isinstance(breakout_target, BreakoutTarget):
+            raise ValueError(f"breakout_target must be BreakoutTarget, got {type(breakout_target)!r} instead.")
+
+        b4 = time.perf_counter()
+        shot = shot.copy()
+        pt.simulate(shot, inplace=True)
+        self.diagnostics["pt_simulate"] += time.perf_counter() - b4
+
+        b4 = time.perf_counter()
+        if not self.is_shot_valid(shot, target_id, pocket_id, strict_mode):
+            self.valid = False
+            self.score = 0.0
+            return 0.0
+        self.valid = True
+
+        self.position_quality = np.nan
+        self.target_route_quality = self.get_target_route_quality(
+            shot,
+            target_id,
+            pocket_id,
+            k_b=config.target_collision_k,
+            k_c=config.target_cushion_k,
+            route_type=route_type,
+        )
+        self.cue_action_ease = self.get_cue_action_ease(shot, k=config.cue_action_k)
+        self.cue_route_quality = 1.0
+
+        collision_quality, _ = self.breakout_collision_quality(shot, target_id, breakout_target)
+        if strict_mode:
+            self.target_near_miss_quality = 1.0
+            self.breakout_quality = collision_quality
+        else:
+            self.target_near_miss_quality = self.get_target_near_miss_quality(
+                shot,
+                target_id,
+                pocket_id,
+                k=config.near_miss_k,
+                limit=config.near_miss_limit,
+            )
+            near_miss_quality = self.get_breakout_near_miss_quality(
+                shot,
+                breakout_target,
+                k=config.near_miss_k,
+            )
+            path_region_quality = self.get_breakout_path_region_quality(
+                shot,
+                breakout_target,
+                k=config.position_k,
+            )
+            self.breakout_quality = max(
+                collision_quality,
+                near_miss_quality,
+                breakout_target.path_region_weight * path_region_quality,
+            )
+
+        self.score = (
+                self.target_route_quality
+                * self.cue_action_ease
+                * self.target_near_miss_quality
+                * self.breakout_quality
+        )
+        self.score = np.clip(self.score, 0, 1)
+        self.diagnostics["score_calc"] += time.perf_counter() - b4
+        return self.score
+
     def evaluate_shot_norm(self, shot: pt.System, target_id, pocket_id, target_region,
                            route_type="direct", config=None):
         if config is None:
@@ -459,6 +624,60 @@ class ShotEvaluation:
         if config is None:
             config = self.config
         return self.evaluate_shot(shot, target_id, pocket_id, target_region, route_type=route_type, strict_mode=True, config=config)
+
+    def evaluate_breakout_norm(self, shot: pt.System, target_id, pocket_id, breakout_target: BreakoutTarget,
+                               route_type="direct", config=None):
+        if config is None:
+            config = self.config
+        return self.evaluate_breakout(shot, target_id, pocket_id, breakout_target, False, route_type=route_type, config=config)
+
+    def evaluate_breakout_strict(self, shot: pt.System, target_id, pocket_id, breakout_target: BreakoutTarget,
+                                 route_type="direct", config=None):
+        if config is None:
+            config = self.config
+        return self.evaluate_breakout(shot, target_id, pocket_id, breakout_target, True, route_type=route_type, config=config)
+
+    def evaluate_request_norm(self, shot: pt.System, search_request: SearchRequest, config=None):
+        if config is None:
+            config = self.config
+        if self._objective_value(search_request.objective) == ShotObjective.BREAKOUT.value:
+            return self.evaluate_breakout_norm(
+                shot,
+                search_request.target_ball_id,
+                search_request.target_pocket_id,
+                search_request.breakout_target,
+                route_type=search_request.route_type,
+                config=config,
+            )
+        return self.evaluate_shot_norm(
+            shot,
+            search_request.target_ball_id,
+            search_request.target_pocket_id,
+            search_request.position_target,
+            route_type=search_request.route_type,
+            config=config,
+        )
+
+    def evaluate_request_strict(self, shot: pt.System, search_request: SearchRequest, config=None):
+        if config is None:
+            config = self.config
+        if self._objective_value(search_request.objective) == ShotObjective.BREAKOUT.value:
+            return self.evaluate_breakout_strict(
+                shot,
+                search_request.target_ball_id,
+                search_request.target_pocket_id,
+                search_request.breakout_target,
+                route_type=search_request.route_type,
+                config=config,
+            )
+        return self.evaluate_shot_strict(
+            shot,
+            search_request.target_ball_id,
+            search_request.target_pocket_id,
+            search_request.position_target,
+            route_type=search_request.route_type,
+            config=config,
+        )
 
     def evaluate_shot_final(
             self,
@@ -485,9 +704,52 @@ class ShotEvaluation:
         self.score = np.clip(self.score, 0, 1)
         return self.score
 
+    def evaluate_breakout_final(
+            self,
+            shot: pt.System,
+            target_id,
+            pocket_id,
+            breakout_target: BreakoutTarget,
+            route_type="direct",
+            config: ShotScoreConfig = None,
+    ):
+        if config is None:
+            config = self.config
+        self.score = self.evaluate_breakout_strict(
+            shot,
+            target_id,
+            pocket_id,
+            breakout_target,
+            route_type=route_type,
+            config=config,
+        )
+        return self.score
+
+    def evaluate_request_final(self, shot: pt.System, search_request: SearchRequest, config=None):
+        if config is None:
+            config = self.config
+        if self._objective_value(search_request.objective) == ShotObjective.BREAKOUT.value:
+            return self.evaluate_breakout_final(
+                shot,
+                search_request.target_ball_id,
+                search_request.target_pocket_id,
+                search_request.breakout_target,
+                route_type=search_request.route_type,
+                config=config,
+            )
+        return self.evaluate_shot_final(
+            shot,
+            search_request.target_ball_id,
+            search_request.target_pocket_id,
+            search_request.position_target,
+            route_type=search_request.route_type,
+            config=config,
+        )
+
     def print_score_breakdown(self):
         print(f"score: {self.score:.3f} \nBreakdown:")
         print(f"position_quality: {self.position_quality:.4f}")
+        print(f"breakout_quality: {self.breakout_quality:.4f}")
         print(f"target_route_quality: {self.target_route_quality:.4f}")
         print(f"cue_action_ease: {self.cue_action_ease:.4f}")
         print(f"cue_route_quality: {self.cue_route_quality:.4f}")

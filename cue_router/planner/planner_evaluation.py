@@ -22,7 +22,7 @@ class ShotOption:
             shot=shot,
             target_ball_id=self.target_ball_id,
             target_pocket_id=self.target_pocket_id,
-            target_region=self.target_region,
+            position_target=self.target_region,
             route_type=self.route_type,
         )
 
@@ -143,7 +143,7 @@ class PlannerEvaluation:
 
         if cls._is_side_pocket(target_pocket_id):
             cos_gamma = abs(float(object_to_pocket[0] / v_op))
-            pot_quality *= 0.65 + 0.35 * cos_gamma
+            pot_quality *= 0.5 + 0.5 * cos_gamma
 
         pot_quality *= cls._target_cushion_quality(target_xy)
         pot_quality *= cls._cue_back_cushion_quality(cue_xy, cue_to_object)

@@ -53,6 +53,12 @@ Coding guidelines:
 * **Dead ball**: A problem ball with no currently available direct potting pocket.
 * **Hard ball**: A problem ball with at least one available direct potting pocket but low pot quality or awkward cushion proximity.
 * **Development shot**: A shot whose strategic value includes improving or opening a problem ball, not only potting the current target.
+* **Breakout objective**: An executor search objective for a development shot. The current target ball still must be first-hit legal and potted in the requested pocket, but the cue-ball objective is to disturb one dead problem ball rather than land at a final position target.
+* **Breakout target**: The executor-facing target for a breakout objective. It names exactly one dead ball to develop and may include an internal path region that guides the cue ball through an area without requiring it to finish there.
+* **Direct breakout collision**: A pooltool event-chain outcome where the cue ball directly collides with the breakout target ball after first legally hitting the current target ball.
+* **Indirect breakout collision**: A pooltool event-chain outcome where collisions caused after the legal first hit eventually reach the breakout target ball, including chains such as cue ball to target ball to dead ball. Indirect collision is valid for breakout scoring when allowed by the breakout target.
+* **Breakout path region**: An internal `PositionTarget` on a breakout target that scores whether the cue-ball path passes through a useful development area. It is not a final cue-ball landing target.
+* **Running side**: A breakout sampling preference for side spin that increases the cue ball's reflection angle after cushion contact so the cue ball escapes the developed area. It is a search bias, not an executor scoring term in the first breakout implementation.
 * **Aiming pocket position**: The pocket target point used by potting-angle heuristics. In `ChineseTableSpecs.POCKET_POS`, these are fake ghost-ball aim targets, not physical pocket centers.
 * **Physical pocket area**: The actual pocket center and radius from the pooltool table object. Heatmap validity checks use this area to reject cue-ball locations inside pockets.
 * **Legal cue-ball center area**: The area inside the table where the cue ball's center can exist, excluding cushion-overlap edges and physical pocket interiors.

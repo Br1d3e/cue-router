@@ -46,8 +46,10 @@ class PatternSearch:
         self.shot = search_request.shot
         self.target_ball_id = search_request.target_ball_id
         self.target_pocket_id = search_request.target_pocket_id
-        self.target_region = search_request.target_region
+        self.target_region = search_request.position_target
         self.route_type = search_request.route_type
+        self.route_value = ShotEvaluation._route_value(self.route_type)
+        self.search_request = search_request
         self.eval_config = eval_config
         self.candidate_simulations = 0
         self.valid_potting_candidates = 0
@@ -77,26 +79,22 @@ class PatternSearch:
             new_shot = self.shot.copy()
             new_shot.cue.set_state(V0=new_V0, a=new_a, b=new_b, phi=new_phi, theta=0.0)
 
-            if "bank" in self.route_type:
-                new_score = shot_evaluator.evaluate_shot_strict(
+            if "bank" in self.route_value:
+                new_score = shot_evaluator.evaluate_request_strict(
                     new_shot,
-                    self.target_ball_id,
-                    self.target_pocket_id,
-                    self.target_region,
-                    route_type=self.route_type
+                    self.search_request,
+                    config=self.eval_config,
                 )
             else:
-                new_score = shot_evaluator.evaluate_shot_norm(
+                new_score = shot_evaluator.evaluate_request_norm(
                     new_shot,
-                    self.target_ball_id,
-                    self.target_pocket_id,
-                    self.target_region,
-                    route_type=self.route_type
+                    self.search_request,
+                    config=self.eval_config,
                 )
             self.candidate_simulations += 1
             if new_score > 0:
                 self.valid_potting_candidates += 1
-            new_policy = ShotAction(new_phi, new_V0, new_a, new_b, route_type=self.route_type)
+            new_policy = ShotAction(new_phi, new_V0, new_a, new_b, route_type=self.route_value)
 
             if new_score > best_score + improv_eps:
                 best_score = new_score

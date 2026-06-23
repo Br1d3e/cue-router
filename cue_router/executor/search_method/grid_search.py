@@ -43,7 +43,11 @@ class GridSearch:
     def _search(search_request, side_seeds=SIDE_SEEDS,
                 v0_values=V0_VALUES, phi_offsets=PHI_OFFSETS,
                 eval_config=None):
-        shot, target_ball_id, target_pocket_id, target_region, route_type = search_request
+        shot = search_request.shot
+        target_ball_id = search_request.target_ball_id
+        target_pocket_id = search_request.target_pocket_id
+        route_type = search_request.route_type
+        route_value = ShotEvaluation._route_value(route_type)
         target_ball = shot.balls.get(target_ball_id)
         cue_ball = shot.balls.get(shot.cue.cue_ball_id)
 
@@ -54,7 +58,7 @@ class GridSearch:
 
         target_ball_pos = target_ball.xyz[:2]
         cue_ball_pos = cue_ball.xyz[:2]
-        if route_type == "bank":
+        if route_value == "bank":
             phi0 = Geometry.aim_phi_bank(target_pocket_id, target_ball_pos, cue_ball_pos)
             phi_offsets = np.linspace(-12, 12, num=1 + 12 * 6)
         else:
@@ -76,10 +80,9 @@ class GridSearch:
                     new_shot = shot.copy()
                     new_shot.cue.set_state(V0=V0, a=a, b=b, phi=phi, theta=0.0)
 
-                    score = shot_evaluator.evaluate_shot_strict(new_shot, target_ball_id, target_pocket_id, target_region,
-                                                                route_type=route_type)
+                    score = shot_evaluator.evaluate_request_strict(new_shot, search_request, config=eval_config)
                     scores.append(score)
-                    policies.append(ShotAction(phi, V0, a, b, route_type=route_type))
+                    policies.append(ShotAction(phi, V0, a, b, route_type=route_value))
 
         return np.asarray(scores, dtype=float), np.asarray(policies, dtype=object)
 

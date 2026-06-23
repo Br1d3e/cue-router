@@ -9,13 +9,13 @@ from cue_router.ui.planner_selector import select_planner_layout
 from cue_router.ui.layout import ExecutorLayout, PlannerLayout
 from cue_router.ui.table_view import show_heatmap_target
 from cue_router.executor.shot_evaluation import ShotEvaluation
-from cue_router.core.request import SearchRequest
+from cue_router.core.request import BreakoutTarget, SearchRequest
 
 from cue_router.planner.planner_search import PlannerSearch, PlannerConfig
 
 chinese_table = ChineseTableSpecs.chinese_table
-MODE = "planner"
-VISUAL_SELECTOR = "planner"
+MODE = "breakout"
+VISUAL_SELECTOR = "manual"
 
 PLANNER_CONFIG = PlannerConfig(
     display_k=5
@@ -27,7 +27,7 @@ SEARCH_CONFIG = SearchConfig(
     display_k=TOP_K,
     search_k=10,
     refine_k=5,
-    mode="elite",
+    mode="precise",
     quick_mode="stochastic",
     n_rounds=2,
     stochastic_max_iter=600,
@@ -62,6 +62,18 @@ def manual_layout_2():
     )
 
 
+def manual_layout_3():
+    return ExecutorLayout(
+        cue_ball_pos=(0.6901088731627651, 2.4500081654872075),
+        target_ball_pos=(1.0634757757212845, 2.414148067501361),
+        target_ball_id="1",
+        other_balls_info={"3": (1.2132444202504078, 1.7707757212847035)},
+        target_pocket_id="rt",
+        target_region=None,
+        route_type="direct",
+    )
+
+
 def build_search_request(layout: ExecutorLayout):
     cue = pt.Cue(cue_ball_id="cue")
     shot = pt.System(table=chinese_table, balls=layout.get_balls(), cue=cue)
@@ -70,8 +82,22 @@ def build_search_request(layout: ExecutorLayout):
         shot=shot,
         target_ball_id=layout.target_ball_id,
         target_pocket_id=layout.target_pocket_id,
-        target_region=layout.target_region,
+        position_target=layout.target_region,
         route_type=layout.route_type,
+    )
+
+
+def build_breakout_search_request(layout: ExecutorLayout, breakout_ball_id: str):
+    cue = pt.Cue(cue_ball_id="cue")
+    shot = pt.System(table=chinese_table, balls=layout.get_balls(), cue=cue)
+    shot.set_ballset(ChineseTableSpecs.ball_set)
+    return SearchRequest(
+        shot=shot,
+        target_ball_id=layout.target_ball_id,
+        target_pocket_id=layout.target_pocket_id,
+        route_type=layout.route_type,
+        objective="breakout",
+        breakout_target=BreakoutTarget(breakout_ball_id),
     )
 
 
@@ -106,12 +132,46 @@ def route_search(layout):
             top_shot,
             search_request.target_ball_id,
             search_request.target_pocket_id,
-            search_request.target_region,
+            search_request.position_target,
             route_type=search_request.route_type
         )
         # if shot_evaluator.position_quality <= 0.4:
         #     print(f"Skipping route: position quality={shot_evaluator.position_quality} is too low")
         #     continue
+        shot_evaluator.print_score_breakdown()
+
+        pt.simulate(top_shot, inplace=True)
+        pt.show(top_shot)
+
+
+def breakout_search(layout):
+    search_request = build_breakout_search_request(layout, breakout_ball_id="3")
+    searcher = PolicySearch(search_request)
+
+    b4 = time.time()
+    top_k_scores, top_k_policies = searcher.search(
+        search_config=SEARCH_CONFIG,
+        eval_config=None,
+    )
+    if TOP_K == 1:
+        top_k_scores = [top_k_scores]
+        top_k_policies = [top_k_policies]
+    print(f"breakout search time: {time.time() - b4}")
+
+    for i in range(len(top_k_policies)):
+        print(f"===Breakout Route #{i + 1}===")
+
+        top_score = top_k_scores[i]
+        top_policy = top_k_policies[i]
+
+        print("score:", top_score)
+        print(top_policy)
+
+        top_shot = search_request.shot.copy()
+        top_shot.cue.set_state(V0=top_policy.V0, phi=top_policy.phi, a=top_policy.a, b=top_policy.b)
+
+        shot_evaluator = ShotEvaluation(config=searcher.EVAL_CONFIG)
+        shot_evaluator.evaluate_request_final(top_shot, search_request)
         shot_evaluator.print_score_breakdown()
 
         pt.simulate(top_shot, inplace=True)
@@ -131,7 +191,7 @@ def planner_1_ball(shot):
         print("score:", plan.score)
         print(plan.score_breakdown)
 
-        show_heatmap_target(plan.target_region, layout=planner_layout)
+        show_heatmap_target(plan.position_target, layout=planner_layout)
 
         search_request = plan.to_search_request(shot.copy())
         searcher = PolicySearch(search_request)
@@ -160,7 +220,7 @@ def planner_1_ball(shot):
                 top_shot,
                 search_request.target_ball_id,
                 search_request.target_pocket_id,
-                search_request.target_region,
+                search_request.position_target,
                 route_type=search_request.route_type
             )
             shot_evaluator.print_score_breakdown()
@@ -192,7 +252,7 @@ def planner_full(shot, show_heatmap=False):
         print(plan.score_breakdown)
 
         if show_heatmap:
-            show_heatmap_target(plan.target_region, layout=planner_layout, target_region_thres=0.0)
+            show_heatmap_target(plan.position_target, layout=planner_layout, target_region_thres=0.0)
 
         searcher = PolicySearch(plan.to_search_request(shot.copy()))
         b4 = time.time()
@@ -215,7 +275,7 @@ def planner_full(shot, show_heatmap=False):
             print("plan score:", plan.score)
             print(plan.score_breakdown)
             if show_heatmap:
-                show_heatmap_target(plan.target_region, layout=planner_layout, target_region_thres=0.0)
+                show_heatmap_target(plan.position_target, layout=planner_layout, target_region_thres=0.0)
 
             searcher = PolicySearch(plan.to_search_request(shot.copy()))
             top_k_scores, top_k_policies = searcher.search(
@@ -248,6 +308,8 @@ def main():
         layout = select_executor_layout()
     elif VISUAL_SELECTOR == "planner":
         layout = select_planner_layout()
+    elif MODE == "breakout":
+        layout = manual_layout_3()
     else:
         layout = manual_layout() if MODE == "executor" else manual_layout_2()
     print("Pool layout: \n", layout)
@@ -260,6 +322,8 @@ def main():
 
     if MODE == "executor":
         route_search(layout)
+    elif MODE == "breakout":
+        breakout_search(layout)
     elif MODE == "planner":
         # planner_1_ball(layout, shot)
         planner_full(shot, True)

@@ -2,6 +2,7 @@ import numpy as np
 from scipy.stats import qmc
 
 from cue_router.core.geometry import Geometry
+from cue_router.core.request import ShotObjective
 from cue_router.executor.action import ShotAction
 from cue_router.executor.shot_evaluation import ShotEvaluation, ShotScoreConfig
 
@@ -41,8 +42,9 @@ class EliteSearch:
         self.shot = search_request.shot
         self.target_ball_id = search_request.target_ball_id
         self.target_pocket_id = search_request.target_pocket_id
-        self.target_region = search_request.target_region
+        self.target_region = search_request.position_target
         self.route_type = search_request.route_type
+        self.route_value = ShotEvaluation._route_value(self.route_type)
         self.scores = np.asarray([], dtype=float)
         self.policies = np.asarray([], dtype=object)
         self.rng = np.random.default_rng(seed)
@@ -59,13 +61,7 @@ class EliteSearch:
         new_shot = self.shot.copy()
         new_shot.cue.set_state(V0=V0, a=a, b=b, phi=phi, theta=0.0)
 
-        self.evaluator.evaluate_shot_strict(
-            new_shot,
-            self.target_ball_id,
-            self.target_pocket_id,
-            self.target_region,
-            self.route_type
-        )
+        self.evaluator.evaluate_request_strict(new_shot, self.search_request, config=self.eval_config)
         return self.evaluator.score
 
     def simulate_policies(self, policies):
@@ -85,7 +81,7 @@ class EliteSearch:
 
         target_ball_pos = target_ball.xyz[:2]
         cue_ball_pos = cue_ball.xyz[:2]
-        if self.route_type == "bank":
+        if self.route_value == "bank":
             return Geometry.aim_phi_bank(self.target_pocket_id, target_ball_pos, cue_ball_pos)
         return Geometry.aim_phi(self.target_pocket_id, target_ball_pos, cue_ball_pos)
 
@@ -127,7 +123,7 @@ class EliteSearch:
     def samples_to_policies(self, samples, phi0):
         policies = []
         for phi_offset, V0, a, b in np.asarray(samples, dtype=float).reshape(-1, 4):
-            policies.append(ShotAction(phi0 + phi_offset, V0, a, b, route_type=self.route_type))
+            policies.append(ShotAction(phi0 + phi_offset, V0, a, b, route_type=self.route_value))
         return np.asarray(policies, dtype=object)
 
 
@@ -138,15 +134,19 @@ class EliteSearch:
         sample = sampler.random(n=size)
         l_bounds = [-8, 1, 0, -0.1, -0.1]
         u_bounds = [8, 5, 9, 0.1, 0.1]
-        if "bank" in self.route_type:
+        if "bank" in self.route_value:
             l_bounds[0] = -12
             u_bounds[0] = 12
         scaled_sample = qmc.scale(sample, l_bounds, u_bounds)
 
         phi_offsets = scaled_sample[:, 0]
         V0 = scaled_sample[:, 1]
-        spin_family_idx = np.floor(scaled_sample[:, 2]).astype(int)
-        spin_family_idx = np.clip(spin_family_idx, 0, len(self.SIDE_SEEDS) - 1)
+        p = self.spin_family_probabilities()
+        if p is None:
+            spin_family_idx = np.floor(scaled_sample[:, 2]).astype(int)
+            spin_family_idx = np.clip(spin_family_idx, 0, len(self.SIDE_SEEDS) - 1)
+        else:
+            spin_family_idx = self.rng.choice(len(self.SIDE_SEEDS), size=size, p=p)
         a_b = self.SIDE_SEEDS[spin_family_idx] + scaled_sample[:, 3:5]
         valid_spin = ShotAction.valid_spin_mask(a_b)
 
@@ -245,8 +245,25 @@ class EliteSearch:
         if scales is None:
             scales = np.asarray([1.0, 0.5, 0.1, 0.1], dtype=float)
         children = parents + self.rng.normal(0.0, scales, size=parents.shape)
-        if "bank" in self.route_type:
+        if "bank" in self.route_value:
             children[:, 0] = np.clip(children[:, 0], -12.0, 12.0)
         else:
             children[:, 0] = np.clip(children[:, 0], -8.0, 8.0)
         return children
+
+    def spin_family_probabilities(self):
+        objective = self.search_request.objective.value if hasattr(self.search_request.objective, "value") else self.search_request.objective
+        if objective != ShotObjective.BREAKOUT.value:
+            return None
+        breakout_target = self.search_request.breakout_target
+        if breakout_target is None or breakout_target.preferred_side not in ("left", "right"):
+            return None
+        side = self.SIDE_SEEDS[:, 0]
+        weights = np.ones(len(side), dtype=float)
+        if breakout_target.preferred_side == "left":
+            weights[side > 0] = 3.0
+            weights[side < 0] = 0.5
+        else:
+            weights[side < 0] = 3.0
+            weights[side > 0] = 0.5
+        return weights / np.sum(weights)
