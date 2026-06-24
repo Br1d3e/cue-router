@@ -27,7 +27,7 @@ SEARCH_CONFIG = SearchConfig(
     display_k=TOP_K,
     search_k=10,
     refine_k=5,
-    mode="precise",
+    mode="elite",
     quick_mode="stochastic",
     n_rounds=3,
     stochastic_max_iter=800,
@@ -71,6 +71,17 @@ def manual_layout_3():
         target_pocket_id="rt",
         target_region=None,
         route_type="direct",
+    )
+
+def manual_layout_4():
+    return PlannerLayout(
+        cue_ball_pos=(0.5192460533478496, 1.3362357103973876),
+        balls_info={
+            '3': (0.15431682090364707, 0.6021584104518247),
+            '1': (0.038298856831790795, 0.6802068590092547),
+            '4': (0.17330157866086005, 1.93952912357104),
+            '2': (0.044627109417528454, 1.6252259118127386)
+        }
     )
 
 
@@ -242,8 +253,17 @@ def planner_full(shot, show_heatmap=False):
         if len(plans) == 0:
             break
         plan_idx = 0
-        plan = plans[plan_idx]
 
+        for plan in plans:
+            target_ball = plan.target_ball_id
+            target_pocket = plan.target_pocket_id
+
+            print(target_ball, target_pocket)
+            print("plan score:", plan.score)
+            print(plan.score_breakdown)
+
+        print("\nSelected Plan:")
+        plan = plans[plan_idx]
         target_ball = plan.target_ball_id
         target_pocket = plan.target_pocket_id
 
@@ -263,7 +283,7 @@ def planner_full(shot, show_heatmap=False):
         print(f"route search time used, {time.time() - b4:.4f}")
 
         # fallback
-        while len(top_k_scores) <= 0 or top_k_scores[0] <= 0.1:
+        while len(top_k_scores) <= 0 or top_k_scores[0] <= 0.05:
             plan_idx += 1
             if plan_idx >= len(plans):
                 print(f"unable to find an executable plan")

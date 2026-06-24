@@ -17,9 +17,9 @@ class PlannerConfig:
     target_heatmap_k: int = 2
     playable_threshold: float = 0.25
     option_bonus_weight: float = 0.05
-    top_heatmap_percent: float = 0.05
+    top_heatmap_percent: float = 0.10
     target_region_threshold: float = 0.0
-    future_position_contrast: float = 1.4
+    future_position_contrast: float = 2.0
     max_cut_angle_deg: float = 80.0
     grid_m: int = 60
     grid_n: int = 30
@@ -28,15 +28,17 @@ class PlannerConfig:
     cue_target_distance_softness: float = 0.55
     cue_target_distance_min_quality: float = 0.75
     normal_position_weight: float = 1.0
-    breakout_position_weight: float = 1.9
-    breakout_shot_weight: float = 3.8
+    breakout_position_weight: float = 2.0
+    breakout_shot_weight: float = 4.0
     problem_priority_weight: float = 2.0
-    breakout_problem_priority_threshold: float = 0.55    # min priority value for a problem ball to be considered dead
+    breakout_problem_priority_threshold: float = 0.4   # min priority value for a problem ball to be considered dead
     breakout_problem_top_k: int = 6
-    breakout_helper_top_k: int = 3
-    breakout_shot_min_pot_quality: float = 0.3
-    breakout_shot_min_geometry_quality: float = 0.25
+    breakout_helper_top_k: int = 10
+    breakout_shot_min_pot_quality: float = 0.25
+    breakout_shot_min_geometry_quality: float = 0.20
     breakout_position_threshold: float = 0.08
+    breakout_position_robustness_threshold: float = 0.25
+    breakout_position_robustness_floor: float = 0.2
 
 
 class PlannerSearch:
