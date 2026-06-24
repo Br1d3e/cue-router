@@ -124,6 +124,7 @@ class BreakoutPlanner:
             legal_targets,
             problem_profiles,
             config,
+            table_simplification_factors=None,
     ):
         options = []
         for dead_profile in cls.development_targets(
@@ -169,14 +170,18 @@ class BreakoutPlanner:
                 helper_pocket_distance = float(np.linalg.norm(
                     PlannerEvaluation._aim_pocket_xy(candidate.helper_pocket_id) - helper_xy
                 ))
-                priority_factor = 1.0 + 0.8 * candidate.problem_priority
+                priority_factor = 1.0 + config.problem_priority_weight * candidate.problem_priority
+                table_simplification_factor = cls._table_simplification_factor(
+                    candidate.helper_ball_id,
+                    table_simplification_factors,
+                )
                 base_score = (
                     pot_quality
                     * geometry_quality
                     * candidate.support_score
                     * config.breakout_shot_weight
                 )
-                score = base_score * priority_factor
+                score = base_score * priority_factor * table_simplification_factor
                 options.append(ShotOption(
                     target_ball_id=candidate.helper_ball_id,
                     target_pocket_id=candidate.helper_pocket_id,
@@ -205,6 +210,7 @@ class BreakoutPlanner:
                         "helper_support_score": candidate.support_score,
                         "problem_priority": candidate.problem_priority,
                         "priority_factor": priority_factor,
+                        "table_simplification_factor": table_simplification_factor,
                         "base_score": base_score,
                     },
                 ))
@@ -222,6 +228,7 @@ class BreakoutPlanner:
             target_pocket_id,
             current_pot_quality,
             config,
+            table_simplification_factors=None,
     ):
         options = []
         future_balls = {ball_id: xy for ball_id, xy in balls.items() if ball_id != target_ball_id}
@@ -266,13 +273,17 @@ class BreakoutPlanner:
                 )
                 target_region_value = (0.7 * position_value + 0.3 * candidate.support_score) * robustness_factor
 
-                priority_factor = 1.0 + 0.8 * candidate.problem_priority
+                priority_factor = 1.0 + config.problem_priority_weight * candidate.problem_priority
+                table_simplification_factor = cls._table_simplification_factor(
+                    target_ball_id,
+                    table_simplification_factors,
+                )
                 base_score = (
                     current_pot_quality
                     * target_region_value
                     * config.breakout_position_weight
                 )
-                score = base_score * priority_factor
+                score = base_score * priority_factor * table_simplification_factor
                 options.append(ShotOption(
                     target_ball_id=target_ball_id,
                     target_pocket_id=target_pocket_id,
@@ -297,6 +308,7 @@ class BreakoutPlanner:
                         "helper_support_score": candidate.support_score,
                         "problem_priority": candidate.problem_priority,
                         "priority_factor": priority_factor,
+                        "table_simplification_factor": table_simplification_factor,
                         "base_score": base_score,
                     },
                 ))
@@ -602,6 +614,12 @@ class BreakoutPlanner:
         if scores.size == 0:
             return 0.0
         return float(np.count_nonzero(scores > playable_threshold) / scores.size)
+
+    @staticmethod
+    def _table_simplification_factor(target_ball_id, factors):
+        if factors is None:
+            return 1.0
+        return float(factors.get(target_ball_id, 1.0))
 
     @classmethod
     def _reachable_tangent_axis(cls, helper_xy, pocket_xy, desired_dir, balls):

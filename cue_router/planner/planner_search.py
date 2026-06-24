@@ -30,7 +30,7 @@ class PlannerConfig:
     normal_position_weight: float = 1.0
     breakout_position_weight: float = 2.0
     breakout_shot_weight: float = 4.0
-    problem_priority_weight: float = 2.0
+    problem_priority_weight: float = 0.8
     breakout_problem_priority_threshold: float = 0.4   # min priority value for a problem ball to be considered dead
     breakout_problem_top_k: int = 6
     breakout_helper_top_k: int = 10
@@ -39,6 +39,10 @@ class PlannerConfig:
     breakout_position_threshold: float = 0.08
     breakout_position_robustness_threshold: float = 0.25
     breakout_position_robustness_floor: float = 0.2
+    clear_problem_weight: float = 0.3
+    remaining_problem_weight: float = 0.25
+    table_simplification_min: float = 0.30
+    table_simplification_max: float = 1.25
 
 
 class PlannerSearch:
@@ -64,6 +68,10 @@ class PlannerSearch:
         for key, value in self.problem_profiles.items():
             print(f"ball #{key}")
             print(value)
+        table_simplification_factors = {
+            ball_id: self._table_simplification_factor(ball_id, legal_targets, self.problem_profiles)
+            for ball_id in legal_targets
+        }
         options = []
         options.extend(BreakoutPlanner.build_breakout_shot_options(
             cue_xy,
@@ -71,6 +79,7 @@ class PlannerSearch:
             legal_targets,
             self.problem_profiles,
             self.config,
+            table_simplification_factors=table_simplification_factors,
         ))
 
         for target_ball_id in legal_targets:
@@ -103,6 +112,7 @@ class PlannerSearch:
                         target_pocket_id,
                         option.score_breakdown["current_pot_quality"],
                         self.config,
+                        table_simplification_factors=table_simplification_factors,
                     ))
 
         k = self.config.display_k if display_k is None else display_k
@@ -139,7 +149,13 @@ class PlannerSearch:
             top_k=self.config.target_heatmap_k,
             top_fraction=self.config.top_heatmap_percent,
         )
-        score = current_pot_quality * future_position_value * self.config.normal_position_weight
+        table_simplification_factor = self._table_simplification_factor(
+            target_ball_id,
+            legal_targets,
+            self.problem_profiles,
+        )
+        base_score = current_pot_quality * future_position_value * self.config.normal_position_weight
+        score = base_score * table_simplification_factor
         intended_next_shot_label = None
         if len(intended_next_shot) > 0:
             intended_next_shot_label = ", ".join(option.label() for option in intended_next_shot)
@@ -156,6 +172,8 @@ class PlannerSearch:
                 "current_pot_quality": current_pot_quality,
                 "future_position_value": future_position_value,
                 "target_region_value": future_position_value,
+                "table_simplification_factor": table_simplification_factor,
+                "base_score": base_score,
                 "intended_next_shot": intended_next_shot_label,
                 "cut_angle_deg": PlannerEvaluation.cut_angle_deg(cue_xy, target_xy, target_pocket_id),
                 "problem_priority": 0.0 if problem_profile is None else problem_profile.problem_priority,
@@ -164,6 +182,32 @@ class PlannerSearch:
                 "problem_reasons": () if problem_profile is None else problem_profile.reasons,
             },
         )
+
+    def _table_simplification_factor(self, target_ball_id, legal_targets, profiles):
+        remaining = [ball_id for ball_id in legal_targets if ball_id != target_ball_id]
+        n_remaining = len(remaining)
+
+        target_profile = profiles.get(target_ball_id)
+        cleared_priority = 0.0 if target_profile is None else target_profile.problem_priority
+
+        if n_remaining == 0:
+            remaining_pressure = 0.0
+            urgency = 0.0
+        else:
+            remaining_pressure = sum(
+                profiles[ball_id].problem_priority
+                for ball_id in remaining
+                if ball_id in profiles
+            ) / n_remaining
+            urgency = 1.0 / n_remaining
+
+        clear_bonus = self.config.clear_problem_weight * cleared_priority
+        pressure_penalty = self.config.remaining_problem_weight * remaining_pressure * urgency
+        return float(np.clip(
+            1.0 + clear_bonus - pressure_penalty,
+            self.config.table_simplification_min,
+            self.config.table_simplification_max,
+        ))
 
     def _build_position_value_map(self, balls, legal_targets, target_ball_pos):
         if self.config.lookahead_depth <= 0 or len(legal_targets) == 0:
@@ -207,6 +251,7 @@ class PlannerSearch:
             obstacles=None,
     ):
         balls = obstacles["balls"]
+        legal_targets = obstacles["legal_targets"]
         qualities = []
 
         for candidate in candidates:
@@ -226,9 +271,14 @@ class PlannerSearch:
                 candidate.target_pocket_id,
             )
             problem_profile = self.problem_profiles.get(candidate.target_ball_id)
-            problem_bonus = (self.config.problem_priority_weight * problem_profile.problem_priority
+            priority_factor = 1.0 + (self.config.problem_priority_weight * problem_profile.problem_priority
                              if problem_profile is not None else 0)
-            quality = shot_quality * 0.7 + 0.3 * problem_bonus
+            table_factor = self._table_simplification_factor(
+                candidate.target_ball_id,
+                legal_targets,
+                self.problem_profiles,
+            )
+            quality = shot_quality * priority_factor * table_factor
             qualities.append(np.where(
                 cut_angle_deg < self.config.max_cut_angle_deg,
                 quality,
