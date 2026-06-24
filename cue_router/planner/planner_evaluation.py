@@ -39,6 +39,7 @@ class ShotOption:
 class PlannerEvaluation:
     BALL_CLEARANCE = 2 * ChineseTableSpecs.BALL_RADIUS
     OPTIMAL_CO_RANGE = (0.15, 0.6)
+    OPTIMAL_OP_RANGE = (0.0, 1.0)
     CUSHION_SAFE_DISTANCE = 0.1
     ALPHA_FREE_DEG = 30.0
     ALPHA_HARD_CUTOFF_DEG = 85.0
@@ -48,8 +49,12 @@ class PlannerEvaluation:
     POSITION_OPTIMAL_CO_RANGE = (0.15, 0.6)
     POSITION_CO_CLOSE_SOFTNESS = 0.18
     POSITION_CO_FAR_SOFTNESS = 0.55
+    OP_FAR_SOFTNESS = 0.5
     NEAR_CUSHION_DISTANCE = 0.1
-    TARGET_NEAR_CUSHION_MIN_QUALITY = 0.4
+    TARGET_CUSHION_POCKET_DISTANCE_SCALE = ChineseTableSpecs.TABLE_WIDTH
+    TARGET_CUSHION_SOFTNESS = 0.14
+    MID_POCKET_Y_OFFSET = 0.03
+    MID_POCKET_MIN_CUSHION_DISTANCE = 0.1
     CUE_BACK_CUSHION_MIN_QUALITY = 0.65
     BACK_SNOOKER_DISTANCE = 0.15
     BACK_SNOOKER_CLEARANCE = 2.5 * ChineseTableSpecs.BALL_RADIUS
@@ -101,6 +106,7 @@ class PlannerEvaluation:
             obstacles=obstacles,
         )
         target_xy = cls._xy(target_ball_pos)
+        pocket_xy = cls._aim_pocket_xy(target_pocket_id)
         v_co = np.sqrt((target_xy[0] - cue_X) ** 2 + (target_xy[1] - cue_Y) ** 2)
         alpha_deg = cls.cut_angle_deg_grid(cue_X, cue_Y, target_xy, target_pocket_id)
 
@@ -154,7 +160,7 @@ class PlannerEvaluation:
             cos_gamma = abs(float(object_to_pocket[0] / v_op))
             pot_quality *= 0.5 + 0.5 * cos_gamma
 
-        pot_quality *= cls._target_cushion_quality(target_xy)
+        pot_quality *= cls._target_cushion_quality(target_xy, obstacles)
         pot_quality *= cls._cue_back_cushion_quality(cue_xy, cue_to_object)
         pot_quality *= cls._back_snooker_quality(cue_xy, cue_to_object, obstacles, exclude=(cue_xy, target_xy))
         if pot_quality <= 0:
@@ -234,7 +240,7 @@ class PlannerEvaluation:
             cos_gamma = abs(float(object_to_pocket[0] / v_op))
             pot_quality *= 0.65 + 0.35 * cos_gamma
 
-        pot_quality *= cls._target_cushion_quality(target_xy)
+        pot_quality *= cls._target_cushion_quality(target_xy, obstacles)
         pot_quality *= cls._cue_back_cushion_quality_grid(cue_X, cue_Y, cue_to_object_x, cue_to_object_y)
         pot_quality *= cls._back_snooker_quality_grid(
             cue_X,
@@ -321,11 +327,13 @@ class PlannerEvaluation:
 
     @staticmethod
     def _object_pocket_distance_quality(v_op):
-        return float(0.4 + 0.6 / (1.0 + (v_op / 1.15) ** 1.6))
+        return float(0.3 + 0.7 / (1.0 + (v_op / 1.1) ** 2))
 
-    @staticmethod
-    def _object_pocket_distance_quality_grid(v_op):
-        return 0.4 + 0.6 / (1.0 + (v_op / 1.15) ** 1.6)
+    @classmethod
+    def _object_pocket_distance_quality_grid(cls, v_op):
+        _, op_max = cls.OPTIMAL_OP_RANGE
+        too_far = np.maximum(0.0, v_op - op_max)
+        return np.exp(-(too_far / cls.OP_FAR_SOFTNESS) ** 1.5)
 
     @classmethod
     def cut_angle_deg(cls, cue_ball_pos, target_ball_pos, target_pocket_id):
@@ -477,12 +485,69 @@ class PlannerEvaluation:
         return np.clip(cushion_distance / cls.CUSHION_SAFE_DISTANCE, 0.0, 1.0)
 
     @classmethod
-    def _target_cushion_quality(cls, target_xy):
+    def _target_cushion_quality(cls, target_xy, obstacles=None):
         cushion_distance = cls._nearest_cushion_distance(target_xy)
         if cushion_distance >= cls.NEAR_CUSHION_DISTANCE:
             return 1.0
-        t = np.clip(cushion_distance / cls.NEAR_CUSHION_DISTANCE, 0.0, 1.0)
-        return float(cls.TARGET_NEAR_CUSHION_MIN_QUALITY + (1.0 - cls.TARGET_NEAR_CUSHION_MIN_QUALITY) * t)
+
+        nearest_pocket_distance = cls.nearest_available_pocket_distance(target_xy, obstacles)
+        if not np.isfinite(nearest_pocket_distance):
+            return 0.0
+
+        pocket_quality = np.exp(-((nearest_pocket_distance / cls.TARGET_CUSHION_POCKET_DISTANCE_SCALE) ** 2))
+        cushion_excess = max(0.0, cls.NEAR_CUSHION_DISTANCE - cushion_distance)
+        cushion_quality = np.exp(-((cushion_excess / cls.TARGET_CUSHION_SOFTNESS) ** 2))
+        return float(np.clip(pocket_quality * cushion_quality, 0.0, 1.0))
+
+    @classmethod
+    def nearest_available_pocket_distance(cls, target_xy, obstacles=None):
+        target_xy = cls._xy(target_xy)
+        best_distance = float("inf")
+        for pocket_id in cls.available_pocket_ids_for_target(target_xy):
+            pocket_xy = cls._aim_pocket_xy(pocket_id)
+            if not cls.has_line_of_sight(
+                    target_xy,
+                    pocket_xy,
+                    obstacles,
+                    exclude=(target_xy,),
+            ):
+                continue
+            best_distance = min(best_distance, float(np.linalg.norm(pocket_xy - target_xy)))
+        return best_distance
+
+    @classmethod
+    def available_pocket_ids_for_target(cls, target_xy):
+        target_xy = cls._xy(target_xy)
+        side_pockets_allowed = cls._side_pockets_allowed_for_target(target_xy)
+        return [
+            pocket_id
+            for pocket_id in ChineseTableSpecs.POCKET_ID
+            if side_pockets_allowed or not cls._is_side_pocket(pocket_id)
+        ]
+
+    @classmethod
+    def _side_pockets_allowed_for_target(cls, target_xy):
+        target_xy = cls._xy(target_xy)
+        mid_y = ChineseTableSpecs.TABLE_LENGTH / 2
+        side_width = ChineseTableSpecs.table_specs.side_pocket_width
+        in_mid_pocket_range = abs(target_xy[1] - mid_y) <= side_width / 2
+        near_mid_pocket_range = abs(target_xy[1] - mid_y) <= side_width / 2 + cls.MID_POCKET_Y_OFFSET
+        return (
+            (in_mid_pocket_range or near_mid_pocket_range)
+            and cls._nearest_cushion_distance(target_xy) > cls.MID_POCKET_MIN_CUSHION_DISTANCE
+        )
+
+    @classmethod
+    def target_cushion_pocket_severity(cls, target_xy, nearest_pocket_distance):
+        cushion_distance = cls._nearest_cushion_distance(target_xy)
+        if cushion_distance >= cls.NEAR_CUSHION_DISTANCE:
+            return 0.0
+        if not np.isfinite(nearest_pocket_distance):
+            return 1.0
+        pocket_pressure = 1.0 - np.exp(-((nearest_pocket_distance / cls.TARGET_CUSHION_POCKET_DISTANCE_SCALE) ** 2))
+        cushion_excess = cls.NEAR_CUSHION_DISTANCE - cushion_distance
+        cushion_pressure = 1.0 - np.exp(-((cushion_excess / cls.TARGET_CUSHION_SOFTNESS) ** 2))
+        return float(np.clip(0.65 * pocket_pressure + 0.35 * cushion_pressure, 0.0, 1.0))
 
     @classmethod
     def _cue_back_cushion_quality(cls, cue_xy, cue_to_object):

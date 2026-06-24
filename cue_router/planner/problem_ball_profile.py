@@ -13,6 +13,8 @@ class ProblemBallProfile:
     best_pocket_id: str | None
     available_pockets: int
     cue_access_samples: int
+    nearest_available_pocket_distance: float
+    nearest_cushion_distance: float
     near_long_rail: bool
     near_short_rail: bool
     is_dead: bool
@@ -32,6 +34,7 @@ class ProblemBallAnalyzer:
         0.2,
         0.4,
     )
+    CUSHION_POCKET_HARD_SEVERITY = 0.25
 
     @classmethod
     def analyze(
@@ -59,8 +62,9 @@ class ProblemBallAnalyzer:
         best_pocket_id = None
         available_pockets = 0
         cue_access_samples = 0
+        nearest_available_pocket_distance = float("inf")
 
-        for pocket_id in ChineseTableSpecs.POCKET_ID:
+        for pocket_id in PlannerEvaluation.available_pocket_ids_for_target(ball_xy):
             pocket_xy = PlannerEvaluation._aim_pocket_xy(pocket_id)
             if not PlannerEvaluation.has_line_of_sight(
                     ball_xy,
@@ -70,6 +74,10 @@ class ProblemBallAnalyzer:
             ):
                 continue
 
+            nearest_available_pocket_distance = min(
+                nearest_available_pocket_distance,
+                float(np.linalg.norm(pocket_xy - ball_xy)),
+            )
             pocket_best_shot_ease, pocket_cue_access_samples = cls._ghost_sample_pocket_access(
                 ball_xy,
                 pocket_id,
@@ -84,13 +92,17 @@ class ProblemBallAnalyzer:
                 best_shot_ease = pocket_best_shot_ease
                 best_pocket_id = pocket_id
 
+        nearest_cushion_distance = PlannerEvaluation._nearest_cushion_distance(ball_xy)
+        cushion_pocket_severity = PlannerEvaluation.target_cushion_pocket_severity(
+            ball_xy,
+            nearest_available_pocket_distance,
+        )
         near_long_rail, near_short_rail = cls._near_cushion_flags(ball_xy)
         is_dead = available_pockets == 0
         is_hard = (
             is_dead
             or best_shot_ease < cls.HARD_SHOT_EASE
-            or near_long_rail
-            or near_short_rail
+            or cushion_pocket_severity >= cls.CUSHION_POCKET_HARD_SEVERITY
         )
         require_breakout = is_dead
         reasons = cls._reasons(
@@ -98,13 +110,13 @@ class ProblemBallAnalyzer:
             best_shot_ease,
             near_long_rail,
             near_short_rail,
+            cushion_pocket_severity,
         )
         problem_priority = cls._problem_priority(
             best_shot_ease,
             available_pockets,
             is_dead,
-            near_long_rail,
-            near_short_rail,
+            cushion_pocket_severity,
         )
 
         return ProblemBallProfile(
@@ -113,6 +125,8 @@ class ProblemBallAnalyzer:
             best_pocket_id=best_pocket_id,
             available_pockets=available_pockets,
             cue_access_samples=cue_access_samples,
+            nearest_available_pocket_distance=float(nearest_available_pocket_distance),
+            nearest_cushion_distance=float(nearest_cushion_distance),
             near_long_rail=near_long_rail,
             near_short_rail=near_short_rail,
             is_dead=is_dead,
@@ -181,27 +195,23 @@ class ProblemBallAnalyzer:
         )
 
     @classmethod
-    def _problem_priority(cls, best_shot_ease, available_pockets, is_dead, near_long_rail, near_short_rail):
+    def _problem_priority(cls, best_shot_ease, available_pockets, is_dead, cushion_pocket_severity):
         if is_dead:
             return 1.0
 
         difficulty = 1.0 - float(np.clip(best_shot_ease, 0.0, 1.0))
-        cushion_pressure = 0.0
-        if near_long_rail:
-            cushion_pressure += 0.25
-        if near_short_rail:
-            cushion_pressure += 0.15
-
-        priority = 0.1 + 0.45 * difficulty + cushion_pressure
+        priority = 0.1 + 0.45 * difficulty + 0.35 * cushion_pocket_severity
         return float(np.clip(priority, 0.05, 0.85))
 
     @classmethod
-    def _reasons(cls, is_dead, best_shot_ease, near_long_rail, near_short_rail):
+    def _reasons(cls, is_dead, best_shot_ease, near_long_rail, near_short_rail, cushion_pocket_severity):
         reasons = []
         if is_dead:
             reasons.append("dead")
         elif best_shot_ease < cls.HARD_SHOT_EASE:
             reasons.append("low_shot_ease")
+        if cushion_pocket_severity >= cls.CUSHION_POCKET_HARD_SEVERITY:
+            reasons.append("near_cushion_far_pocket")
         if near_long_rail:
             reasons.append("near_long_rail")
         if near_short_rail:

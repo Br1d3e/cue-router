@@ -19,7 +19,7 @@ class PlannerConfig:
     option_bonus_weight: float = 0.05
     top_heatmap_percent: float = 0.05
     target_region_threshold: float = 0.0
-    future_position_contrast: float = 1.0
+    future_position_contrast: float = 1.4
     max_cut_angle_deg: float = 80.0
     grid_m: int = 60
     grid_n: int = 30
@@ -27,13 +27,13 @@ class PlannerConfig:
     cue_target_distance_free: float = 0.45      # cue ball positioning distance penalty
     cue_target_distance_softness: float = 0.55
     cue_target_distance_min_quality: float = 0.75
-    normal_position_weight: float = 0.8
+    normal_position_weight: float = 1.0
     breakout_position_weight: float = 1.9
     breakout_shot_weight: float = 3.8
     problem_priority_weight: float = 2.0
-    breakout_problem_priority_threshold: float = 0.5    # min priority value for a problem ball to be considered dead
+    breakout_problem_priority_threshold: float = 0.55    # min priority value for a problem ball to be considered dead
     breakout_problem_top_k: int = 6
-    breakout_helper_top_k: int = 4
+    breakout_helper_top_k: int = 3
     breakout_shot_min_pot_quality: float = 0.3
     breakout_shot_min_geometry_quality: float = 0.25
     breakout_position_threshold: float = 0.08
@@ -223,9 +223,13 @@ class PlannerSearch:
                 balls[candidate.target_ball_id],
                 candidate.target_pocket_id,
             )
+            problem_profile = self.problem_profiles.get(candidate.target_ball_id)
+            problem_bonus = (self.config.problem_priority_weight * problem_profile.problem_priority
+                             if problem_profile is not None else 0)
+            quality = shot_quality * 0.7 + 0.3 * problem_bonus
             qualities.append(np.where(
                 cut_angle_deg < self.config.max_cut_angle_deg,
-                shot_quality,
+                quality,
                 0.0,
             ))
 

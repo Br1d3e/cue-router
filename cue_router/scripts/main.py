@@ -29,8 +29,8 @@ SEARCH_CONFIG = SearchConfig(
     refine_k=5,
     mode="precise",
     quick_mode="stochastic",
-    n_rounds=2,
-    stochastic_max_iter=600,
+    n_rounds=3,
+    stochastic_max_iter=800,
     elite_max_iter=600,
     elite_frac=0.4,
     sample_mode="LHS",
@@ -263,7 +263,7 @@ def planner_full(shot, show_heatmap=False):
         print(f"route search time used, {time.time() - b4:.4f}")
 
         # fallback
-        while len(top_k_scores) <= 0 or top_k_scores[0] <= 0.2:
+        while len(top_k_scores) <= 0 or top_k_scores[0] <= 0.1:
             plan_idx += 1
             if plan_idx >= len(plans):
                 print(f"unable to find an executable plan")

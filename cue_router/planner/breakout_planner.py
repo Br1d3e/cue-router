@@ -22,9 +22,9 @@ class BreakoutCandidate:
 
 class BreakoutPlanner:
     MIN_CUT_ANGLE_DEG = 5.0
-    MAX_CUT_ANGLE_DEG = 45.0
-    CUT_ANGLE_SOFTNESS_DEG = 30.0
-    TANGENT_SOFTNESS_DEG = 45.0
+    MAX_CUT_ANGLE_DEG = 30.0
+    CUT_ANGLE_SOFTNESS_DEG = 15.0
+    TANGENT_SOFTNESS_DEG = 30.0
     MAX_BREAKOUT_DISTANCE = 1.0
 
     @classmethod
@@ -70,6 +70,25 @@ class BreakoutPlanner:
             top_k,
             exclude=(),
     ):
+        candidates = cls.all_helper_candidates(
+            balls,
+            legal_targets,
+            problem_profiles,
+            dead_profile,
+            exclude=exclude,
+        )
+        candidates.sort(key=lambda candidate: candidate.support_score, reverse=True)
+        return candidates[:top_k]
+
+    @classmethod
+    def all_helper_candidates(
+            cls,
+            balls,
+            legal_targets,
+            problem_profiles,
+            dead_profile,
+            exclude=(),
+    ):
         candidates = []
         for helper_ball_id in cls.helper_ball_ids(legal_targets, problem_profiles, balls, exclude=exclude):
             for pocket_id in ChineseTableSpecs.POCKET_ID:
@@ -88,9 +107,7 @@ class BreakoutPlanner:
                     support_score=score,
                     problem_priority=dead_profile.problem_priority,
                 ))
-
-        candidates.sort(key=lambda candidate: candidate.support_score, reverse=True)
-        return candidates[:top_k]
+        return candidates
 
     @classmethod
     def build_breakout_shot_options(
@@ -196,14 +213,14 @@ class BreakoutPlanner:
             if dead_profile.ball_id not in future_balls:
                 continue
 
-            for candidate in cls.top_helper_candidates(
+            candidates = cls.all_helper_candidates(
                     future_balls,
                     future_legal_targets,
                     problem_profiles,
                     dead_profile,
-                    config.breakout_helper_top_k,
                     exclude=(dead_profile.ball_id,),
-            ):
+            )
+            for candidate in candidates:
                 heatmap = cls.breakout_position_heatmap(
                     future_balls,
                     candidate,
@@ -215,15 +232,16 @@ class BreakoutPlanner:
                 peak_value = float(np.max(heatmap.scores))
                 if peak_value <= 0:
                     continue
+                position_value = heatmap.mean_top_fraction(config.top_heatmap_percent)
+                target_region_value = 0.7 * position_value + 0.3 * candidate.support_score
 
                 problem_bonus = config.problem_priority_weight * candidate.problem_priority
                 score = (
                     current_pot_quality
-                    * peak_value
-                    * candidate.support_score
-                    * (1.0 + problem_bonus)
+                    * target_region_value
                     * config.breakout_position_weight
                 )
+                score = score * 0.7 + problem_bonus * 0.3
                 options.append(ShotOption(
                     target_ball_id=target_ball_id,
                     target_pocket_id=target_pocket_id,
@@ -235,8 +253,10 @@ class BreakoutPlanner:
                     score_breakdown={
                         "option_family": "breakout_position",
                         "current_pot_quality": current_pot_quality,
-                        "target_region_value": peak_value,
-                        "future_position_value": peak_value,
+                        "target_region_value": target_region_value,
+                        "future_position_value": target_region_value,
+                        "position_mean_top_fraction": position_value,
+                        "position_peak_value": peak_value,
                         "intended_next_shot": candidate.label(),
                         "helper_ball_id": candidate.helper_ball_id,
                         "dead_ball_id": candidate.dead_ball_id,
@@ -295,8 +315,10 @@ class BreakoutPlanner:
         if pot_dir is None or desired_dir is None:
             return 0.0
 
-        tangent_axis = np.asarray((-pot_dir[1], pot_dir[0]), dtype=float)
-        tangent_alignment = abs(float(np.dot(tangent_axis, desired_dir)))
+        tangent_axis = cls._reachable_tangent_axis(helper_xy, pocket_xy, desired_dir, balls)
+        if tangent_axis is None:
+            return 0.0
+        tangent_alignment = max(0.0, float(np.dot(tangent_axis, desired_dir)))
         angle_error = np.degrees(np.arccos(np.clip(tangent_alignment, -1.0, 1.0)))
         angle_quality = np.exp(-((angle_error / cls.TANGENT_SOFTNESS_DEG) ** 2))
         distance_quality = cls._breakout_distance_quality(np.linalg.norm(dead_xy - helper_xy))
@@ -426,6 +448,39 @@ class BreakoutPlanner:
     @classmethod
     def _breakout_distance_quality(cls, distance):
         return float(np.exp(-((distance / cls.MAX_BREAKOUT_DISTANCE) ** 2)))
+
+    @classmethod
+    def _reachable_tangent_axis(cls, helper_xy, pocket_xy, desired_dir, balls):
+        pot_dir = cls._unit(pocket_xy - helper_xy)
+        if pot_dir is None:
+            return None
+
+        cue_axis = -pot_dir
+        tangent_axis = np.asarray((-pot_dir[1], pot_dir[0]), dtype=float)
+        best_axis = None
+        best_alignment = 0.0
+        for cue_distance in (0.2, 0.4, 0.7):
+            for lateral_offset in (-0.25, -0.12, 0.0, 0.12, 0.25):
+                cue_xy = helper_xy + cue_axis * cue_distance + tangent_axis * lateral_offset
+                if not ChineseTableSpecs.in_table(cue_xy):
+                    continue
+                if not PlannerEvaluation.has_line_of_sight(
+                        cue_xy,
+                        helper_xy,
+                        balls,
+                        exclude=(cue_xy, helper_xy),
+                ):
+                    continue
+                cue_in_dir = cls._unit(helper_xy - cue_xy)
+                if cue_in_dir is None:
+                    continue
+                actual_tangent = tangent_axis if np.dot(cue_in_dir, tangent_axis) >= 0 else -tangent_axis
+                alignment = max(0.0, float(np.dot(actual_tangent, desired_dir)))
+                if alignment > best_alignment:
+                    best_alignment = alignment
+                    best_axis = actual_tangent
+
+        return best_axis
 
     @staticmethod
     def _helper_dead_path_clearance(helper_xy, dead_xy, balls):
