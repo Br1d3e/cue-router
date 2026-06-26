@@ -71,7 +71,8 @@ Coding guidelines:
 * **Target-region robustness**: Planner value from a broad high-quality cue-ball landing area. Shot options use the mean of the top heatmap cells rather than only the single best cell.
 * **Cut-angle pruning**: Planner skips a target ball and pocket candidate when the cue-ball-to-object and object-to-pocket angle is too thin. The initial cutoff is `85` degrees.
 * **Shot visibility**: Planner line-of-sight checks ignore the cue ball and target ball as obstacles. Other balls block cue-to-target and target-to-pocket paths.
-* **Route type**: The path family for the target ball. Planner v1 enumerates only direct routes but keeps `route_type` on shot options and search requests for future bank-shot expansion.
+* **Route type**: The path family for the target ball. Planner enumerates direct routes and one-rail bank routes for normal positioning shots.
+* **Bank rail intent**: Optional executor-facing planner intent for one-rail bank shots. A bank route may name one intended rail (`left`, `right`, `bottom`, or `top`); pure bank requests without a rail remain valid and let executor aim choose any reachable one-rail bank.
 * **Lookahead depth**: How many future turns the planner estimates beyond the current shot. Planner search keeps this configurable and starts with default depth `1`.
 * **Future candidate cap**: Planner future-value evaluation considers visible direct next-shot candidates and caps them to the top five candidates by pot quality before applying option richness.
 * **Planner config**: The dataclass of tunable planner heuristics, including heatmap size, lookahead depth, candidate caps, cut-angle threshold, and option-richness weights.

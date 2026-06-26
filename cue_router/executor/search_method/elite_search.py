@@ -86,7 +86,12 @@ class EliteSearch:
         target_ball_pos = target_ball.xyz[:2]
         cue_ball_pos = cue_ball.xyz[:2]
         if self.route_value == "bank":
-            return Geometry.aim_phi_bank(self.target_pocket_id, target_ball_pos, cue_ball_pos)
+            return Geometry.aim_phi_bank(
+                self.target_pocket_id,
+                target_ball_pos,
+                cue_ball_pos,
+                rail=self.search_request.bank_rail,
+            )
         return Geometry.aim_phi(self.target_pocket_id, target_ball_pos, cue_ball_pos)
 
     def search(self, max_iterations=1000, n_rounds=5, elite_frac=0.2):

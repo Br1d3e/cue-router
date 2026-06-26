@@ -33,6 +33,7 @@ class SearchRequest:
     target_pocket_id: str
 
     route_type: RouteType = RouteType.DIRECT
+    bank_rail: Literal["left", "right", "bottom", "top"] | None = None
     objective: ShotObjective = ShotObjective.POSITION
 
     position_target: PositionTarget | None = None
@@ -46,6 +47,7 @@ class SearchRequest:
             f"target_region: {self.position_target}, "
             f"breakout_target: {self.breakout_target}, "
             f"route_type: {self.route_type}, "
+            f"bank_rail: {self.bank_rail}, "
             f"objective: {self.objective})"
         )
 

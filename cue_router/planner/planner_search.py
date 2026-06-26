@@ -14,12 +14,12 @@ class PlannerConfig:
     display_k: int = 5
     lookahead_depth: int = 1
     top_k_future_candidates: int = 5
-    target_heatmap_k: int = 2
+    target_heatmap_k: int = 3
     playable_threshold: float = 0.25
-    option_bonus_weight: float = 0.05
-    top_heatmap_percent: float = 0.10
+    option_bonus_weight: float = 0.10
+    top_heatmap_percent: float = 0.15
     target_region_threshold: float = 0.0
-    future_position_contrast: float = 2.0
+    future_position_contrast: float = 1.1
     max_cut_angle_deg: float = 80.0
     grid_m: int = 60
     grid_n: int = 30
@@ -29,8 +29,8 @@ class PlannerConfig:
     cue_target_distance_min_quality: float = 0.75
     normal_position_weight: float = 1.0
     breakout_position_weight: float = 2.0
-    breakout_shot_weight: float = 4.0
-    problem_priority_weight: float = 0.8
+    breakout_shot_weight: float = 5.0
+    problem_priority_weight: float = 1.2
     breakout_problem_priority_threshold: float = 0.4   # min priority value for a problem ball to be considered dead
     breakout_problem_top_k: int = 6
     breakout_helper_top_k: int = 10
@@ -39,10 +39,12 @@ class PlannerConfig:
     breakout_position_threshold: float = 0.08
     breakout_position_robustness_threshold: float = 0.25
     breakout_position_robustness_floor: float = 0.2
-    clear_problem_weight: float = 0.3
-    remaining_problem_weight: float = 0.25
-    table_simplification_min: float = 0.30
+    clear_problem_weight: float = 0.5
+    remaining_problem_weight: float = 0.6
+    table_simplification_min: float = 0.2
     table_simplification_max: float = 1.25
+    bank_shot_cap: float = 0.45
+    bank_route_weight: float = 0.85
 
 
 class PlannerSearch:
@@ -114,6 +116,16 @@ class PlannerSearch:
                         self.config,
                         table_simplification_factors=table_simplification_factors,
                     ))
+                else:
+                    options.extend(self._build_bank_shot_options(
+                        cue_xy,
+                        balls,
+                        legal_targets,
+                        target_ball_id,
+                        target_pocket_id,
+                        value_map=value_map,
+                        problem_profile=self.problem_profiles.get(target_ball_id),
+                    ))
 
         k = self.config.display_k if display_k is None else display_k
         return sorted(options, key=lambda option: option.score, reverse=True)[:k]
@@ -182,6 +194,88 @@ class PlannerSearch:
                 "problem_reasons": () if problem_profile is None else problem_profile.reasons,
             },
         )
+
+    def _build_bank_shot_options(
+            self,
+            cue_xy,
+            balls,
+            legal_targets,
+            target_ball_id,
+            target_pocket_id,
+            value_map=None,
+            problem_profile=None,
+    ):
+        target_xy = balls[target_ball_id]
+        target_region, future_position_value, intended_next_shot = value_map.select_best_target_heatmap(
+            threshold=self.config.target_region_threshold,
+            top_k=self.config.target_heatmap_k,
+            top_fraction=self.config.top_heatmap_percent,
+        )
+        table_simplification_factor = self._table_simplification_factor(
+            target_ball_id,
+            legal_targets,
+            self.problem_profiles,
+        )
+        intended_next_shot_label = None
+        if len(intended_next_shot) > 0:
+            intended_next_shot_label = ", ".join(option.label() for option in intended_next_shot)
+
+        options = []
+        for rail in PlannerEvaluation.BANK_RAILS:
+            bank_quality = PlannerEvaluation.evaluate_bank_shot_ease(
+                cue_xy,
+                target_xy,
+                target_pocket_id,
+                rail,
+                obstacles=balls,
+                cap=self.config.bank_shot_cap,
+            )
+            if bank_quality <= 0:
+                continue
+
+            bank_geometry = PlannerEvaluation.bank_geometry(
+                cue_xy,
+                target_xy,
+                target_pocket_id,
+                rail,
+                obstacles=balls,
+            )
+            base_score = (
+                bank_quality
+                * future_position_value
+                * self.config.normal_position_weight
+                * self.config.bank_route_weight
+            )
+            score = base_score * table_simplification_factor
+            options.append(ShotOption(
+                target_ball_id=target_ball_id,
+                target_pocket_id=target_pocket_id,
+                target_region=target_region,
+                score=score,
+                route_type="bank",
+                bank_rail=rail,
+                option_family="normal_position",
+                score_breakdown={
+                    "option_family": "normal_position",
+                    "current_pot_quality": bank_quality,
+                    "future_position_value": future_position_value,
+                    "target_region_value": future_position_value,
+                    "table_simplification_factor": table_simplification_factor,
+                    "bank_route_weight": self.config.bank_route_weight,
+                    "bank_shot_cap": self.config.bank_shot_cap,
+                    "base_score": base_score,
+                    "intended_next_shot": intended_next_shot_label,
+                    "cut_angle_deg": PlannerEvaluation.cut_angle_deg(cue_xy, target_xy, target_pocket_id),
+                    "bank_rail": rail,
+                    "bank_travel_distance": 0.0 if bank_geometry is None else bank_geometry["travel_distance"],
+                    "problem_priority": 0.0 if problem_profile is None else problem_profile.problem_priority,
+                    "is_problem_ball": False if problem_profile is None else problem_profile.is_hard,
+                    "require_breakout": False if problem_profile is None else problem_profile.require_breakout,
+                    "problem_reasons": () if problem_profile is None else problem_profile.reasons,
+                },
+            ))
+
+        return options
 
     def _table_simplification_factor(self, target_ball_id, legal_targets, profiles):
         remaining = [ball_id for ball_id in legal_targets if ball_id != target_ball_id]

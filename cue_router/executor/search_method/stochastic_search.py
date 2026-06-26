@@ -101,7 +101,12 @@ class StochasticSearch:
         target_ball_pos = target_ball.xyz[:2]
         cue_ball_pos = cue_ball.xyz[:2]
         if self.route_value == "bank":
-            phi0 = Geometry.aim_phi_bank(self.target_pocket_id, target_ball_pos, cue_ball_pos)
+            phi0 = Geometry.aim_phi_bank(
+                self.target_pocket_id,
+                target_ball_pos,
+                cue_ball_pos,
+                rail=self.search_request.bank_rail,
+            )
         else:
             phi0 = Geometry.aim_phi(self.target_pocket_id, target_ball_pos, cue_ball_pos)
         if phi0 is None:

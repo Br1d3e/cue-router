@@ -64,7 +64,12 @@ class GridSearch:
         target_ball_pos = target_ball.xyz[:2]
         cue_ball_pos = cue_ball.xyz[:2]
         if route_value == "bank":
-            phi0 = Geometry.aim_phi_bank(target_pocket_id, target_ball_pos, cue_ball_pos)
+            phi0 = Geometry.aim_phi_bank(
+                target_pocket_id,
+                target_ball_pos,
+                cue_ball_pos,
+                rail=search_request.bank_rail,
+            )
             phi_offsets = np.linspace(-12, 12, num=1 + 12 * 6)
         else:
             phi0 = Geometry.aim_phi(target_pocket_id, target_ball_pos, cue_ball_pos)

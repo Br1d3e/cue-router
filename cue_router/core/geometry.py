@@ -321,7 +321,7 @@ class Geometry:
         raise ValueError(f"unknown rail: {rail}")
 
     @staticmethod
-    def aim_phi_bank(pocket, target_pos, cue_pos):
+    def aim_phi_bank(pocket, target_pos, cue_pos, rail=None):
         if isinstance(pocket, str):
             pocket_pos = np.array(ChineseTableSpecs.pocket_pos_by_id(pocket))
         else:
@@ -331,6 +331,12 @@ class Geometry:
         R = ChineseTableSpecs.BALL_RADIUS
 
         rails = ["left", "right", "bottom", "top"]
+        if rail is not None:
+            if rail not in rails:
+                raise ValueError(f"unknown bank rail: {rail}")
+            pos = Geometry._mirror_point_across_rail(pocket_pos, rail, W=table_width, L=table_length, R=R)
+            return Geometry.aim_phi(pos, target_pos, cue_pos)
+
         mirrored_pocket_pos = None
         for rail in rails:
             pos = Geometry._mirror_point_across_rail(pocket_pos, rail, W=table_width, L=table_length, R=R)

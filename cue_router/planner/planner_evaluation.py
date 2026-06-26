@@ -1,8 +1,9 @@
 from dataclasses import dataclass, field
+from typing import Literal
 
 import numpy as np
 
-from cue_router.core.geometry import HeatmapTarget, PositionTarget
+from cue_router.core.geometry import Geometry, HeatmapTarget, PositionTarget
 from cue_router.core.request import BreakoutTarget, SearchRequest, ShotObjective
 from cue_router.core.table import ChineseTableSpecs
 
@@ -17,6 +18,7 @@ class ShotOption:
     route_type: str = "direct"
     objective: ShotObjective | str = ShotObjective.POSITION
     breakout_target: BreakoutTarget | None = None
+    bank_rail: Literal["left", "right", "bottom", "top"] | None = None
     option_family: str = "normal_position"
     score_breakdown: dict[str, object] = field(default_factory=dict)
 
@@ -31,12 +33,18 @@ class ShotOption:
             target_pocket_id=self.target_pocket_id,
             position_target=self.target_region,
             route_type=self.route_type,
+            bank_rail=self.bank_rail,
             objective=self.objective,
             breakout_target=self.breakout_target,
         )
 
 
 class PlannerEvaluation:
+    BANK_RAILS = ("left", "right", "bottom", "top")
+    BANK_SHORT_RAIL_FACTOR = 1.0
+    BANK_LONG_RAIL_FACTOR = 0.75
+    BANK_TRAVEL_SOFTNESS = 1.6
+    BANK_DEFAULT_CAP = 0.45
     BALL_CLEARANCE = 2 * ChineseTableSpecs.BALL_RADIUS
     OPTIMAL_CO_RANGE = (0.15, 0.6)
     OPTIMAL_OP_RANGE = (0.0, 1.0)
@@ -167,6 +175,102 @@ class PlannerEvaluation:
             return 0.0
         pot_quality = cls.MIN_PLAYABLE_QUALITY + (1 - cls.MIN_PLAYABLE_QUALITY) * pot_quality
         return float(np.clip(pot_quality, 0.0, 1.0))
+
+    @classmethod
+    def evaluate_bank_shot_ease(
+            cls,
+            cue_ball_pos,
+            target_ball_pos,
+            target_pocket_id,
+            rail,
+            obstacles=None,
+            cap=BANK_DEFAULT_CAP,
+    ) -> float:
+        bank = cls.bank_geometry(cue_ball_pos, target_ball_pos, target_pocket_id, rail, obstacles)
+        if bank is None:
+            return 0.0
+
+        cue_xy = cls._xy(cue_ball_pos)
+        target_xy = cls._xy(target_ball_pos)
+        contact_xy = bank["contact_xy"]
+        object_to_contact = contact_xy - target_xy
+        cue_to_object = target_xy - cue_xy
+        v_co = np.linalg.norm(cue_to_object)
+        v_or = np.linalg.norm(object_to_contact)
+        if v_co == 0 or v_or == 0:
+            return 0.0
+
+        cos_alpha = np.dot(cue_to_object, object_to_contact) / (v_co * v_or)
+        cos_alpha = max(float(cos_alpha), 0.0)
+        alpha_deg = np.degrees(np.arccos(np.clip(cos_alpha, -1.0, 1.0)))
+        if alpha_deg >= cls.ALPHA_HARD_CUTOFF_DEG:
+            return 0.0
+
+        raw_quality = (
+            cls._cut_angle_quality(alpha_deg)
+            * cls._cue_object_distance_quality(v_co)
+            * cls._bank_travel_distance_quality(bank["travel_distance"])
+            * cls._bank_rail_quality(rail)
+        )
+        return float(np.clip(cap * raw_quality, 0.0, cap))
+
+    @classmethod
+    def is_bank_candidate(
+            cls,
+            cue_ball_pos,
+            target_ball_pos,
+            target_pocket_id,
+            rail,
+            obstacles=None,
+            cap=BANK_DEFAULT_CAP,
+    ):
+        return cls.evaluate_bank_shot_ease(
+            cue_ball_pos,
+            target_ball_pos,
+            target_pocket_id,
+            rail,
+            obstacles=obstacles,
+            cap=cap,
+        ) > 0
+
+    @classmethod
+    def bank_geometry(cls, cue_ball_pos, target_ball_pos, target_pocket_id, rail, obstacles=None):
+        if rail not in cls.BANK_RAILS:
+            raise ValueError(f"unknown bank rail: {rail}")
+
+        cue_xy = cls._xy(cue_ball_pos)
+        target_xy = cls._xy(target_ball_pos)
+        pocket_xy = cls._aim_pocket_xy(target_pocket_id)
+
+        if not ChineseTableSpecs.in_table(cue_xy) or not ChineseTableSpecs.in_table(target_xy):
+            return None
+
+        mirrored_pocket = Geometry._mirror_point_across_rail(
+            pocket_xy,
+            rail,
+            W=ChineseTableSpecs.TABLE_WIDTH,
+            L=ChineseTableSpecs.TABLE_LENGTH,
+            R=ChineseTableSpecs.BALL_RADIUS,
+        )
+        contact_xy = cls._bank_contact_point(target_xy, mirrored_pocket, rail)
+        if contact_xy is None:
+            return None
+
+        if not cls.has_line_of_sight(cue_xy, target_xy, obstacles, exclude=(cue_xy, target_xy)):
+            return None
+        if not cls.has_line_of_sight(target_xy, contact_xy, obstacles, exclude=(cue_xy, target_xy)):
+            return None
+        if not cls.has_line_of_sight(contact_xy, pocket_xy, obstacles, exclude=(cue_xy, target_xy)):
+            return None
+
+        return {
+            "contact_xy": contact_xy,
+            "mirrored_pocket_xy": mirrored_pocket,
+            "travel_distance": (
+                float(np.linalg.norm(contact_xy - target_xy))
+                + float(np.linalg.norm(pocket_xy - contact_xy))
+            ),
+        }
 
     @classmethod
     def evaluate_shot_ease_grid(
@@ -334,6 +438,50 @@ class PlannerEvaluation:
         _, op_max = cls.OPTIMAL_OP_RANGE
         too_far = np.maximum(0.0, v_op - op_max)
         return np.exp(-(too_far / cls.OP_FAR_SOFTNESS) ** 1.5)
+
+    @classmethod
+    def _bank_contact_point(cls, target_xy, mirrored_pocket_xy, rail):
+        target_xy = cls._xy(target_xy)
+        mirrored_pocket_xy = cls._xy(mirrored_pocket_xy)
+        direction = mirrored_pocket_xy - target_xy
+        if rail in ("left", "right"):
+            rail_x = (
+                ChineseTableSpecs.BALL_RADIUS
+                if rail == "left"
+                else ChineseTableSpecs.TABLE_WIDTH - ChineseTableSpecs.BALL_RADIUS
+            )
+            if direction[0] == 0:
+                return None
+            t = (rail_x - target_xy[0]) / direction[0]
+            contact = target_xy + t * direction
+            if t <= 0:
+                return None
+            if not (ChineseTableSpecs.BALL_RADIUS < contact[1] < ChineseTableSpecs.TABLE_LENGTH - ChineseTableSpecs.BALL_RADIUS):
+                return None
+            return contact
+
+        rail_y = (
+            ChineseTableSpecs.BALL_RADIUS
+            if rail == "bottom"
+            else ChineseTableSpecs.TABLE_LENGTH - ChineseTableSpecs.BALL_RADIUS
+        )
+        if direction[1] == 0:
+            return None
+        t = (rail_y - target_xy[1]) / direction[1]
+        contact = target_xy + t * direction
+        if t <= 0:
+            return None
+        if not (ChineseTableSpecs.BALL_RADIUS < contact[0] < ChineseTableSpecs.TABLE_WIDTH - ChineseTableSpecs.BALL_RADIUS):
+            return None
+        return contact
+
+    @classmethod
+    def _bank_rail_quality(cls, rail):
+        return cls.BANK_SHORT_RAIL_FACTOR if rail in ("bottom", "top") else cls.BANK_LONG_RAIL_FACTOR
+
+    @classmethod
+    def _bank_travel_distance_quality(cls, travel_distance):
+        return float(np.exp(-((travel_distance / cls.BANK_TRAVEL_SOFTNESS) ** 2)))
 
     @classmethod
     def cut_angle_deg(cls, cue_ball_pos, target_ball_pos, target_pocket_id):
@@ -721,6 +869,16 @@ def evaluate_shot_ease(cue_ball_pos, target_ball_pos, target_pocket_id, obstacle
         cue_ball_pos,
         target_ball_pos,
         target_pocket_id,
+        obstacles=obstacles,
+    )
+
+
+def evaluate_bank_shot_ease(cue_ball_pos, target_ball_pos, target_pocket_id, rail, obstacles=None) -> float:
+    return PlannerEvaluation.evaluate_bank_shot_ease(
+        cue_ball_pos,
+        target_ball_pos,
+        target_pocket_id,
+        rail,
         obstacles=obstacles,
     )
 
