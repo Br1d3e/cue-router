@@ -52,6 +52,8 @@ Coding guidelines:
 * **Planner context**: Planner-side metadata passed into a discontinuous search call to preserve sequence intent from the previous selected option.
 * **Continuation intent**: The top-k intended next-shot options from a previous shot option. Planner context uses this as an exact-match preference for later current-shot selection and future-position heatmap selection.
 * **Continuity factor**: A capped score multiplier that rewards normal-position shot options matching the planner context's continuation intent. It is a soft bonus, not a gate.
+* **Plan coordinator**: A layer outside planner search and executor search that can combine planner intent, executor verification, and deeper continuation scoring without making planner search depend on cue-parameter search.
+* **Two-ply continuation value**: A coordinator-side estimate of how much value remains after the current shot is executed, using the resulting table state and the selected option's intended next-shot candidates to score future position value for the following shot.
 * **Problem ball**: A legal target ball whose current table context makes it strategically urgent to solve before the endgame.
 * **Dead ball**: A problem ball with no currently available direct potting pocket.
 * **Hard ball**: A problem ball with at least one available direct potting pocket but low pot quality or awkward cushion proximity.

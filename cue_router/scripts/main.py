@@ -12,16 +12,20 @@ from cue_router.executor.shot_evaluation import ShotEvaluation
 from cue_router.core.request import BreakoutTarget, SearchRequest
 
 from cue_router.planner.planner_search import PlannerContext, PlannerSearch, PlannerConfig
+from cue_router.planner.two_ply_search import TwoPlyConfig, TwoPlySearch
 
 chinese_table = ChineseTableSpecs.chinese_table
 MODE = "planner"
-VISUAL_SELECTOR = "manual"
+VISUAL_SELECTOR = "planner"
 
 PLANNER_CONFIG = PlannerConfig(
     display_k=5,
 )
 LEGAL_TARGET_BALLS = [str(i) for i in range(1, 8)]
 TOP_K = 5
+TWO_PLY_CONFIG = TwoPlyConfig(
+    planner_top_k=TOP_K,
+)
 
 SEARCH_CONFIG = SearchConfig(
     display_k=TOP_K,
@@ -241,7 +245,10 @@ def planner_1_ball(shot):
 
 
 # Executes best plan + best route policy every time until clearance
-def planner_full(shot, show_heatmap=False):
+def planner_full(shot, show_heatmap=False, two_ply=False):
+    if two_ply:
+        return planner_full_two_ply(shot, show_heatmap=show_heatmap)
+
     shot = shot.copy()
     planner = PlannerSearch(PLANNER_CONFIG)
     planner_context = None
@@ -327,6 +334,67 @@ def planner_full(shot, show_heatmap=False):
             legal_balls.append("8")
 
 
+def planner_full_two_ply(shot, show_heatmap=False):
+    shot = shot.copy()
+    two_ply_planner = TwoPlySearch(
+        planner_config=PLANNER_CONFIG,
+        two_ply_config=TWO_PLY_CONFIG,
+    )
+    planner_context = None
+    legal_balls = LEGAL_TARGET_BALLS
+    planner_layout = PlannerLayout.from_shot(shot)
+
+    while len(legal_balls) > 0:
+        b4 = time.time()
+        plans = two_ply_planner.search(
+            shot,
+            planner_layout,
+            legal_balls,
+            context=planner_context,
+        )
+        print(f"two-ply search time used, {time.time() - b4:.4f}")
+        if len(plans) == 0:
+            print("unable to find an executable two-ply plan")
+            break
+
+        for i, result in enumerate(plans):
+            plan = result.option
+            print(f"==== Two-Ply Plan #{i + 1} ====")
+            print(plan.target_ball_id, plan.target_pocket_id, plan.route_type)
+            print("combined score:", result.combined_score)
+            print("planner score:", result.planner_score)
+            print("execution score:", result.execution_score)
+            print("two-ply value:", result.two_ply_value)
+            print("two-ply excluded:", result.two_ply_excluded)
+            print(plan.score_breakdown)
+
+        result = plans[0]
+        plan = result.option
+
+        print("\nSelected Two-Ply Plan:")
+        print(plan.target_ball_id, plan.target_pocket_id, plan.route_type)
+        print("combined score:", result.combined_score)
+        print("planner score:", result.planner_score)
+        print("execution score:", result.execution_score)
+        print("two-ply value:", result.two_ply_value)
+        print(plan.score_breakdown)
+        if planner_context is not None:
+            print("planner context:", planner_context)
+
+        if show_heatmap and plan.target_region is not None:
+            show_heatmap_target(plan.target_region, layout=planner_layout, target_region_thres=0.0)
+
+        print("policy:", result.policy)
+        pt.show(result.simulated_shot)
+
+        shot = result.simulated_shot
+        planner_context = result.next_context
+        planner_layout = PlannerLayout.from_shot(shot)
+        legal_balls = [ball_id for ball_id in legal_balls if ball_id in planner_layout.balls_info]
+        if len(legal_balls) == 0 and "8" in planner_layout.balls_info:
+            legal_balls.append("8")
+
+
 def main():
     if VISUAL_SELECTOR == "executor":
         layout = select_executor_layout()
@@ -335,7 +403,7 @@ def main():
     elif MODE == "breakout":
         layout = manual_layout_3()
     else:
-        layout = manual_layout() if MODE == "executor" else manual_layout_2()
+        layout = manual_layout() if MODE == "executor" else manual_layout_4()
     print("Pool layout: \n", layout)
     if layout is None:
         raise RuntimeError("No pool layout selected.")
@@ -350,7 +418,7 @@ def main():
         breakout_search(layout)
     elif MODE == "planner":
         # planner_1_ball(layout, shot)
-        planner_full(shot, True)
+        planner_full(shot, True, True)
 
 
 if __name__ == "__main__":
