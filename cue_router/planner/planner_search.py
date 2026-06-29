@@ -14,7 +14,7 @@ class PlannerConfig:
     display_k: int = 5
     lookahead_depth: int = 1
     top_k_future_candidates: int = 5
-    target_heatmap_k: int = 3
+    target_heatmap_k: int = 2
     playable_threshold: float = 0.25
     option_bonus_weight: float = 0.10
     top_heatmap_percent: float = 0.15
@@ -43,8 +43,40 @@ class PlannerConfig:
     remaining_problem_weight: float = 0.6
     table_simplification_min: float = 0.2
     table_simplification_max: float = 1.25
-    bank_shot_cap: float = 0.45
-    bank_route_weight: float = 0.85
+    bank_shot_cap: float = 0.5
+    bank_route_weight: float = 0.88
+    continuity_bonus_weight: float = 0.40
+    continuity_heatmap_bonus_weight: float = 0.75
+    continuity_min_factor: float = 0.85
+    continuity_max_factor: float = 1.40
+
+
+@dataclass(frozen=True)
+class PlannerContext:
+    previous_shot: ShotOption | None = None
+    intended_next_shots: tuple[ContinuationOption, ...] = ()
+    confidence: float = 1.0
+    breakout_stage: str | None = None
+    breakout_target_ball_id: str | None = None
+
+    @classmethod
+    def from_option(cls, option):
+        intended_next_shots = option.score_breakdown.get("intended_next_shots", ())
+        if intended_next_shots is None:
+            intended_next_shots = ()
+        confidence = cls._scalar_confidence(option.score_breakdown.get("future_position_value", 1.0))
+        return cls(
+            previous_shot=option,
+            intended_next_shots=tuple(intended_next_shots),
+            confidence=confidence,
+        )
+
+    @staticmethod
+    def _scalar_confidence(value):
+        values = np.asarray(value, dtype=float)
+        if values.size == 0:
+            return 0.0
+        return float(np.clip(np.mean(values), 0.0, 1.0))
 
 
 class PlannerSearch:
@@ -54,7 +86,7 @@ class PlannerSearch:
         self.config = config or PlannerConfig()
         self.problem_profiles = {}
 
-    def search(self, layout, legal_target_balls, display_k=None):
+    def search(self, layout, legal_target_balls, display_k=None, context=None):
         if not isinstance(layout, PlannerLayout):
             raise TypeError(f"layout must be PlannerLayout, got {type(layout)!r}")
         cue_xy = PlannerEvaluation._xy(layout.cue_ball_pos)
@@ -102,6 +134,7 @@ class PlannerSearch:
                     target_pocket_id,
                     value_map=value_map,
                     problem_profile=self.problem_profiles.get(target_ball_id),
+                    context=context,
                 )
                 if option is not None:
                     options.append(option)
@@ -125,6 +158,7 @@ class PlannerSearch:
                         target_pocket_id,
                         value_map=value_map,
                         problem_profile=self.problem_profiles.get(target_ball_id),
+                        context=context,
                     ))
 
         k = self.config.display_k if display_k is None else display_k
@@ -139,6 +173,7 @@ class PlannerSearch:
             target_pocket_id,
             value_map=None,
             problem_profile=None,
+            context=None,
     ):
         target_xy = balls[target_ball_id]
         if not PlannerEvaluation.is_direct_candidate(
@@ -160,6 +195,8 @@ class PlannerSearch:
             threshold=self.config.target_region_threshold,
             top_k=self.config.target_heatmap_k,
             top_fraction=self.config.top_heatmap_percent,
+            preferred_options=self._context_intended_next_shots(context),
+            preferred_weight=self._context_heatmap_bonus_weight(context),
         )
         table_simplification_factor = self._table_simplification_factor(
             target_ball_id,
@@ -167,7 +204,14 @@ class PlannerSearch:
             self.problem_profiles,
         )
         base_score = current_pot_quality * future_position_value * self.config.normal_position_weight
-        score = base_score * table_simplification_factor
+        continuity_factor = self._continuity_factor(
+            target_ball_id,
+            target_pocket_id,
+            "direct",
+            None,
+            context,
+        )
+        score = base_score * table_simplification_factor * continuity_factor
         intended_next_shot_label = None
         if len(intended_next_shot) > 0:
             intended_next_shot_label = ", ".join(option.label() for option in intended_next_shot)
@@ -185,8 +229,10 @@ class PlannerSearch:
                 "future_position_value": future_position_value,
                 "target_region_value": future_position_value,
                 "table_simplification_factor": table_simplification_factor,
+                "continuity_factor": continuity_factor,
                 "base_score": base_score,
                 "intended_next_shot": intended_next_shot_label,
+                "intended_next_shots": intended_next_shot,
                 "cut_angle_deg": PlannerEvaluation.cut_angle_deg(cue_xy, target_xy, target_pocket_id),
                 "problem_priority": 0.0 if problem_profile is None else problem_profile.problem_priority,
                 "is_problem_ball": False if problem_profile is None else problem_profile.is_hard,
@@ -204,12 +250,15 @@ class PlannerSearch:
             target_pocket_id,
             value_map=None,
             problem_profile=None,
+            context=None,
     ):
         target_xy = balls[target_ball_id]
         target_region, future_position_value, intended_next_shot = value_map.select_best_target_heatmap(
             threshold=self.config.target_region_threshold,
             top_k=self.config.target_heatmap_k,
             top_fraction=self.config.top_heatmap_percent,
+            preferred_options=self._context_intended_next_shots(context),
+            preferred_weight=self._context_heatmap_bonus_weight(context),
         )
         table_simplification_factor = self._table_simplification_factor(
             target_ball_id,
@@ -246,7 +295,14 @@ class PlannerSearch:
                 * self.config.normal_position_weight
                 * self.config.bank_route_weight
             )
-            score = base_score * table_simplification_factor
+            continuity_factor = self._continuity_factor(
+                target_ball_id,
+                target_pocket_id,
+                "bank",
+                rail,
+                context,
+            )
+            score = base_score * table_simplification_factor * continuity_factor
             options.append(ShotOption(
                 target_ball_id=target_ball_id,
                 target_pocket_id=target_pocket_id,
@@ -261,10 +317,12 @@ class PlannerSearch:
                     "future_position_value": future_position_value,
                     "target_region_value": future_position_value,
                     "table_simplification_factor": table_simplification_factor,
+                    "continuity_factor": continuity_factor,
                     "bank_route_weight": self.config.bank_route_weight,
                     "bank_shot_cap": self.config.bank_shot_cap,
                     "base_score": base_score,
                     "intended_next_shot": intended_next_shot_label,
+                    "intended_next_shots": intended_next_shot,
                     "cut_angle_deg": PlannerEvaluation.cut_angle_deg(cue_xy, target_xy, target_pocket_id),
                     "bank_rail": rail,
                     "bank_travel_distance": 0.0 if bank_geometry is None else bank_geometry["travel_distance"],
@@ -302,6 +360,45 @@ class PlannerSearch:
             self.config.table_simplification_min,
             self.config.table_simplification_max,
         ))
+
+    def _continuity_factor(self, target_ball_id, target_pocket_id, route_type, bank_rail, context):
+        if context is None:
+            return 1.0
+        if not self._matches_context_intent(target_ball_id, target_pocket_id, route_type, bank_rail, context):
+            return 1.0
+
+        confidence = float(np.clip(context.confidence, 0.0, 1.0))
+        factor = 1.0 + self.config.continuity_bonus_weight * confidence
+        return float(np.clip(
+            factor,
+            self.config.continuity_min_factor,
+            self.config.continuity_max_factor,
+        ))
+
+    def _matches_context_intent(self, target_ball_id, target_pocket_id, route_type, bank_rail, context):
+        for option in self._context_intended_next_shots(context):
+            if option.target_ball_id != target_ball_id:
+                continue
+            if option.target_pocket_id != target_pocket_id:
+                continue
+            if option.route_type != route_type:
+                continue
+            option_bank_rail = getattr(option, "bank_rail", None)
+            if option_bank_rail is not None and option_bank_rail != bank_rail:
+                continue
+            return True
+        return False
+
+    def _context_intended_next_shots(self, context):
+        if context is None:
+            return ()
+        return tuple(context.intended_next_shots)
+
+    def _context_heatmap_bonus_weight(self, context):
+        if context is None:
+            return 0.0
+        confidence = float(np.clip(context.confidence, 0.0, 1.0))
+        return self.config.continuity_heatmap_bonus_weight * confidence
 
     def _build_position_value_map(self, balls, legal_targets, target_ball_pos):
         if self.config.lookahead_depth <= 0 or len(legal_targets) == 0:

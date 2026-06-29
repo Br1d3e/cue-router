@@ -11,14 +11,14 @@ from cue_router.ui.table_view import show_heatmap_target
 from cue_router.executor.shot_evaluation import ShotEvaluation
 from cue_router.core.request import BreakoutTarget, SearchRequest
 
-from cue_router.planner.planner_search import PlannerSearch, PlannerConfig
+from cue_router.planner.planner_search import PlannerContext, PlannerSearch, PlannerConfig
 
 chinese_table = ChineseTableSpecs.chinese_table
 MODE = "planner"
-VISUAL_SELECTOR = "planner"
+VISUAL_SELECTOR = "manual"
 
 PLANNER_CONFIG = PlannerConfig(
-    display_k=5
+    display_k=5,
 )
 LEGAL_TARGET_BALLS = [str(i) for i in range(1, 8)]
 TOP_K = 5
@@ -244,23 +244,24 @@ def planner_1_ball(shot):
 def planner_full(shot, show_heatmap=False):
     shot = shot.copy()
     planner = PlannerSearch(PLANNER_CONFIG)
+    planner_context = None
     legal_balls = LEGAL_TARGET_BALLS
     planner_layout = PlannerLayout.from_shot(shot)
     while len(legal_balls) > 0:
         b4 = time.time()
-        plans = planner.search(planner_layout, legal_balls, display_k=5)
+        plans = planner.search(planner_layout, legal_balls, display_k=5, context=planner_context)
         print(f"plan search time used, {time.time() - b4:.4f}")
         if len(plans) == 0:
             break
         plan_idx = 0
 
-        for plan in plans:
-            target_ball = plan.target_ball_id
-            target_pocket = plan.target_pocket_id
-
-            print(target_ball, target_pocket)
-            print("plan score:", plan.score)
-            print(plan.score_breakdown)
+        # for plan in plans:
+        #     target_ball = plan.target_ball_id
+        #     target_pocket = plan.target_pocket_id
+        #
+        #     print(target_ball, target_pocket)
+        #     print("plan score:", plan.score)
+        #     print(plan.score_breakdown)
 
         print("\nSelected Plan:")
         plan = plans[plan_idx]
@@ -270,6 +271,8 @@ def planner_full(shot, show_heatmap=False):
         print(target_ball, target_pocket)
         print("plan score:", plan.score)
         print(plan.score_breakdown)
+        if planner_context is not None:
+            print("planner context:", planner_context)
 
         if show_heatmap and plan.target_region is not None:
             show_heatmap_target(plan.target_region, layout=planner_layout, target_region_thres=0.0)
@@ -317,6 +320,7 @@ def planner_full(shot, show_heatmap=False):
         pt.show(best_shot)
 
         shot = best_shot
+        planner_context = PlannerContext.from_option(plan)
         planner_layout = PlannerLayout.from_shot(shot)
         legal_balls = [ball_id for ball_id in legal_balls if ball_id in planner_layout.balls_info]
         if len(legal_balls) == 0 and "8" in planner_layout.balls_info:

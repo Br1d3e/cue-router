@@ -13,10 +13,13 @@ class ContinuationOption:
     target_ball_id: str
     target_pocket_id: str
     route_type: str = "direct"
+    bank_rail: str | None = None
     score: float = 0.0
 
     def label(self):
-        return f"{self.target_ball_id}:{self.target_pocket_id}:{self.route_type}"
+        if self.bank_rail is None:
+            return f"{self.target_ball_id}:{self.target_pocket_id}:{self.route_type}"
+        return f"{self.target_ball_id}:{self.target_pocket_id}:{self.route_type}:{self.bank_rail}"
 
 
 @dataclass
@@ -123,8 +126,19 @@ class PositionValueMap:
         candidates = cls._score_candidates(candidates, value_grid, top_fraction)
         return cls(value_grid, candidates=candidates, pocket_mask_radius=pocket_mask_radius)
 
-    def select_best_target_heatmap(self, threshold=0.0, top_k=1, top_fraction=0.05):
-        selected_indices = self._top_candidate_indices(top_k)
+    def select_best_target_heatmap(
+            self,
+            threshold=0.0,
+            top_k=1,
+            top_fraction=0.05,
+            preferred_options=(),
+            preferred_weight=0.0,
+    ):
+        selected_indices = self._top_candidate_indices(
+            top_k,
+            preferred_options=preferred_options,
+            preferred_weight=preferred_weight,
+        )
         if len(selected_indices) > 0:
             scores = np.max(self.value_grid[selected_indices], axis=0)
             score = self._mean_top_fraction(scores, top_fraction)
@@ -179,15 +193,29 @@ class PositionValueMap:
             return None
         return best_idx
 
-    def _top_candidate_indices(self, top_k):
+    def _top_candidate_indices(self, top_k, preferred_options=(), preferred_weight=0.0):
         if len(self.candidates) == 0 or top_k <= 0:
             return []
         candidate_scores = np.asarray([candidate.score for candidate in self.candidates], dtype=float)
+        if preferred_weight > 0 and len(preferred_options) > 0:
+            preferred_keys = {self._continuation_key(option) for option in preferred_options}
+            for idx, candidate in enumerate(self.candidates):
+                if self._continuation_key(candidate) in preferred_keys:
+                    candidate_scores[idx] *= 1.0 + preferred_weight
         positive = np.flatnonzero(candidate_scores > 0)
         if positive.size == 0:
             return []
         selected = positive[np.argsort(candidate_scores[positive])[::-1][:top_k]]
         return [int(i) for i in selected]
+
+    @staticmethod
+    def _continuation_key(option):
+        return (
+            option.target_ball_id,
+            option.target_pocket_id,
+            option.route_type,
+            option.bank_rail,
+        )
 
     @classmethod
     def _score_candidates(cls, candidates, value_grid, top_fraction):
