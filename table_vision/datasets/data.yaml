@@ -1,0 +1,24 @@
+path: .
+train: captures
+val: captures
+
+names:
+  0: black ball 8
+  1: blue ball 2
+  2: blue ball-t 10
+  3: brown ball 7
+  4: brown ball-t 15
+  5: green ball 6
+  6: green ball-t 14
+  7: orange ball 5
+  8: orange ball-t 13
+  9: pink ball 4
+  10: pink ball-t 12
+  11: pocket
+  12: red ball 3
+  13: red ball-t 11
+  14: table
+  15: triangle rack
+  16: white ball
+  17: yellow ball 1
+  18: yellow ball-t 9

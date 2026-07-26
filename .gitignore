@@ -1,6 +1,16 @@
 test*.ipynb
 *test*.py
 tests/
+table_vision/datasets/captures/
+runs/
+prelabels/
+videos/
+models/
+mpv/
+table_vision/datasets/roboflow_cleanup.py
+dataset_exp*/
+init_dataset/
+fix/
 
 # IDEA
 .idea/
@@ -15,4 +25,3 @@ __pycache__/
 # OS files
 .DS_Store
 Thumbs.db
-

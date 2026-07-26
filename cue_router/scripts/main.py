@@ -418,7 +418,7 @@ def main():
         breakout_search(layout)
     elif MODE == "planner":
         # planner_1_ball(layout, shot)
-        planner_full(shot, True, True)
+        planner_full(shot, True, False)
 
 
 if __name__ == "__main__":
