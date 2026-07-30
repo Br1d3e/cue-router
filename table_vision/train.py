@@ -5,8 +5,8 @@ import torch
 
 
 folder = Path(__file__).resolve().parent
-model_path = folder / "models" / "yolo_1.pt"
-dataset_folder = folder / "datasets" / "dataset_exp_2"
+model_path = folder / "models" / "yolo_2.pt"
+dataset_folder = folder / "datasets" / "dataset_3_fix"
 data_path = dataset_folder / "data.yaml"
 
 model = YOLO(model_path)
@@ -14,6 +14,8 @@ model = YOLO(model_path)
 model.train(
     data=data_path,
     imgsz=960,
+    batch=8,
+    cache=False,
 
     epochs=80,
     patience=20,
@@ -39,6 +41,6 @@ model.train(
     seed=42,
     deterministic=True,
 
-    project="exp",
-    name="test_2",
+    project="train",
+    name="train_3_fix",
 )

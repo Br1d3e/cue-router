@@ -4,7 +4,7 @@ from pathlib import Path
 
 
 DATASETS_FOLDER = Path(__file__).resolve().parent
-MODEL_PATH = DATASETS_FOLDER.parent / "models" / "train_referee12_960_19cls.pt"
+MODEL_PATH = DATASETS_FOLDER.parent / "models" / "yolo_3.pt"
 CAPTURES_FOLDER = DATASETS_FOLDER / "captures"
 
 PRELABELS_FOLDER = DATASETS_FOLDER / "prelabels"
@@ -131,7 +131,10 @@ def main() -> None:
     model = YOLO(MODEL_PATH)
 
     for match_folder in sorted(CAPTURES_FOLDER.iterdir()):
-        if match_folder.name == "horizontal_view":
+        if match_folder.name != "horizontal_view_2":
+            continue
+
+        if "horizontal_view" in match_folder.name:
             image_folder = match_folder
             replace_pockets = False
         else:

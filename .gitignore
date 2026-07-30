@@ -7,10 +7,12 @@ prelabels/
 videos/
 models/
 mpv/
-table_vision/datasets/roboflow_cleanup.py
+table_vision/datasets/roboflow*
+table_vision/datasets/dataset_*/
 dataset_exp*/
 init_dataset/
 fix/
+batch*/
 
 # IDEA
 .idea/
