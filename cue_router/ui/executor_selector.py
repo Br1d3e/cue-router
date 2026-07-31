@@ -61,6 +61,7 @@ class ExecutorLayoutSelector:
         self.region_mode = None
         self.target_region = None
         self.layout = None
+        self.preloaded_balls_info = None
 
         self.pending_ball_pos = None
         self.pending_ball_role = None
@@ -76,15 +77,48 @@ class ExecutorLayoutSelector:
         self.update_text()
         self.ax.set_ylim(-HELP_AREA_HEIGHT, fig_width + 2)
 
+
+    def from_table_layout(self, table_layout):
+        balls_info = dict(table_layout.balls_info)
+        self.cue_ball_pos = balls_info.pop("cue")
+        if not balls_info:
+            raise ValueError("TableLayout must contain at least one object ball.")
+
+        self.preloaded_balls_info = balls_info
+        self.other_balls_info = balls_info.copy()
+
+        cue_ball = create_ball(
+            self.ax,
+            table_to_plot(self.cue_ball_pos),
+            BALL_COLORS["cue"],
+        )
+        self.artists_by_mode["cue_ball"].append(cue_ball)
+
+        for ball_id, pos in balls_info.items():
+            ball = create_ball(self.ax, table_to_plot(pos), BALL_COLORS[ball_id])
+            ball.set_picker(True)
+            ball.set_gid(ball_id)
+            self.artists_by_mode["other_balls"].append(ball)
+
+        self.mode_sequence = ["target_ball", "pocket", "target_region"]
+        self.mode_idx = 0
+        self.current_mode = self.mode_sequence[0]
+        self.mode_history.clear()
+        self.update_text()
+        return self
+
     def select(self):
         plt.show()
         return self.layout
 
     def update_text(self, extra=""):
         self.mode_text.set_text(f"Selection mode: {self.current_mode}")
+        target_ball_help = "Click target ball position, then press 1-9 or QWERTY for 10-15."
+        if self.preloaded_balls_info is not None:
+            target_ball_help = "Click one of the preloaded object balls to select the target."
         help_by_mode = {
             "cue_ball": "Click on the table to place the cue ball. Press backspace/u to undo.",
-            "target_ball": "Click target ball position, then press 1-9 or QWERTY for 10-15.",
+            "target_ball": target_ball_help,
             "pocket": "Click one grey pocket wedge.",
             "route_type": "Choose route type: D for direct, B for bank. Press esc/enter to use direct.",
             "other_balls": "Optional: click a ball position, then press 1-9 or QWERTY. Press esc/enter to continue.",
@@ -115,6 +149,8 @@ class ExecutorLayoutSelector:
         elif self.current_mode == "target_ball":
             self.target_ball_pos = None
             self.target_ball_id = None
+            if self.preloaded_balls_info is not None:
+                self.other_balls_info = self.preloaded_balls_info.copy()
         elif self.current_mode == "pocket":
             self.target_pocket_id = None
             for patch in self.pocket_patches.values():
@@ -164,6 +200,9 @@ class ExecutorLayoutSelector:
             self.add_mode_artist(create_ball(self.ax, pos_plot, BALL_COLORS["cue"]))
             self.advance_mode()
         elif self.current_mode == "target_ball":
+            if self.preloaded_balls_info is not None:
+                self.update_text("Click one of the preloaded object balls.")
+                return
             self.pending_ball_pos = pos_table
             self.pending_ball_role = "target"
             self.update_text("Now press target ball id: 1-9 or QWERTY for 10-15.")
@@ -185,6 +224,20 @@ class ExecutorLayoutSelector:
                 self.update_text("Click the opposite rectangle/line corner.")
 
     def on_pick(self, event):
+        if self.current_mode == "target_ball" and self.preloaded_balls_info is not None:
+            ball_id = event.artist.get_gid()
+            if ball_id not in self.preloaded_balls_info:
+                return
+            self.target_ball_id = ball_id
+            self.target_ball_pos = self.preloaded_balls_info[ball_id]
+            self.other_balls_info = {
+                other_id: pos
+                for other_id, pos in self.preloaded_balls_info.items()
+                if other_id != ball_id
+            }
+            self.advance_mode()
+            return
+
         if self.current_mode != "pocket":
             return
         pocket_id = event.artist.get_gid()
@@ -295,5 +348,8 @@ class ExecutorLayoutSelector:
         self.update_text("Selection complete. Close this window to continue.")
 
 
-def select_executor_layout():
-    return ExecutorLayoutSelector().select()
+def select_executor_layout(table_layout=None):
+    selector = ExecutorLayoutSelector()
+    if table_layout is not None:
+        selector.from_table_layout(table_layout)
+    return selector.select()

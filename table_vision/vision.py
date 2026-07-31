@@ -1,20 +1,15 @@
-from typing import Any
-
-from numpy import dtype, ndarray
 from ultralytics import YOLO
 from pathlib import Path
 
-import torch
 import numpy as np
 import cv2
 
 from dataclasses import dataclass, field
 
-from itertools import permutations, combinations
+from itertools import combinations
 
 from cue_router.core.table import ChineseTableSpecs
 from cue_router.ui.layout import PlannerLayout, ExecutorLayout
-
 
 folder = Path(__file__).resolve().parent
 MODEL_PATH = folder / "models" / "yolo_3.pt"
@@ -78,12 +73,8 @@ BALL_CLASS_TO_ID = {
 L = ChineseTableSpecs.TABLE_LENGTH
 W = ChineseTableSpecs.TABLE_WIDTH
 CANONICAL_POCKETS = {
-    "lb": (0, 0),
-    "lc": (0, L / 2),
-    "lt": (0, L),
-    "rb": (W, 0),
-    "rc": (W, L / 2),
-    "rt": (W, L),
+    pocket_id: tuple(ChineseTableSpecs.chinese_table.pockets[pocket_id].center[:2])
+    for pocket_id in ChineseTableSpecs.POCKET_ID
 }
 
 
@@ -101,12 +92,14 @@ class Detection:
         return np.asarray(((x1 + x2) / 2, (y1 + y2) / 2), dtype=float)
 
     def __repr__(self):
-        return (f"Detection(\n"
-                f"   id={self.id}\n"
-                f"   class_id={self.class_id}\n"
-                f"   xyxy={self.xyxy}\n"
-                f"   confidence={self.confidence:.3f}\n"
-                f")")
+        return (
+            f"Detection(\n"
+            f"   id={self.id}\n"
+            f"   class_id={self.class_id}\n"
+            f"   xyxy={self.xyxy}\n"
+            f"   confidence={self.confidence:.3f}\n"
+            f")"
+        )
 
 
 @dataclass
@@ -124,15 +117,18 @@ class ImageState:
     resolved: bool = False
 
     def __repr__(self):
-        return (f"ImageState(\n"
-                f"  balls={self.balls},\n"
-                f"  ball_classes={self.ball_classes},\n\n"
-                f"  pockets={self.pockets},\n\n"
-                f"  table={self.table}\n\n"
-                f"  unresolved_balls={self.unresolved_balls},\n"
-                f"  unresolved_pockets={self.unresolved_pockets},\n"
-                f"  resolved={self.resolved}\n"
-                f")")
+        return (
+            f"ImageState(\n"
+            f"  balls={self.balls},\n"
+            f"  ball_classes={self.ball_classes},\n\n"
+            f"  pockets={self.pockets},\n\n"
+            f"  table={self.table}\n\n"
+            f"  unresolved_balls={self.unresolved_balls},\n"
+            f"  unresolved_pockets={self.unresolved_pockets},\n"
+            f"  resolved={self.resolved}\n"
+            f")"
+        )
+
 
 @dataclass
 class TableLayout:
@@ -141,16 +137,19 @@ class TableLayout:
     balls_info: dict[str, tuple[float, float]]
     ball_ids: set[str] = field(default_factory=set)
     unused_ball_ids: set[str] = field(default_factory=set)
+    unresolved_balls_info: dict[str, tuple[float, float]] = field(default_factory=dict)
 
-    orientation:str | None = None
+    orientation: list[str] | str | None = None
 
     def __repr__(self):
-        return (f"TableLayout(\n"
-                f"  image_state={self.image_state},\n"
-                f"  balls_info={self.balls_info},\n"
-                f"  ball_ids={self.ball_ids},\n"
-                f"  unused_ball_ids={self.unused_ball_ids},\n"
-                )
+        return (
+            f"TableLayout(\n"
+            f"  image_state={self.image_state},\n"
+            f"  balls_info={self.balls_info},\n"
+            f"  ball_ids={self.ball_ids},\n"
+            f"  unused_ball_ids={self.unused_ball_ids},"
+            f")\n"
+        )
 
     def to_planner_layout(self):
         cue_ball_pos = self.balls_info["cue"]
@@ -161,24 +160,44 @@ class TableLayout:
             balls_info=other_balls_info,
         )
 
-    def to_executor_layout(self, target_ball, target_pocket, target_region):
-        ...
-
-
     def flip_horizontal(self, width=W):
         for ball_id, pos in self.balls_info.items():
             x, y = pos
             self.balls_info[ball_id] = (width - x, y)
         if self.orientation is None:
-            self.orientation = "horizontal_180"
-        elif self.orientation == "horizontal_180":
-            self.orientation = None
-
+            self.orientation = ["horizontal_180"]
+        elif "horizontal_180" in self.orientation:
+            self.orientation.remove("horizontal_180")
+        else:
+            self.orientation.append("horizontal_180")
         return self
+
+    def flip_vertical(self, length=L):
+        for ball_id, pos in self.balls_info.items():
+            x, y = pos
+            self.balls_info[ball_id] = (x, length - y)
+        if self.orientation is None:
+            self.orientation = ["vertical_180"]
+        elif "horizontal_180" in self.orientation:
+            self.orientation.remove("vertical_180")
+        else:
+            self.orientation.append("vertical_180")
+        return self
+
+    def full_unresolved_layout(self):
+        image_state = self.image_state
+        balls_info = self.balls_info.copy()
+        ball_ids = self.ball_ids.copy()
+
+        for ball_id, pos in self.unresolved_balls_info.items():
+            balls_info[ball_id] = pos
+            ball_ids.add(ball_id)
+        unused_ball_ids = set(BALL_CLASS_TO_ID.values()) - ball_ids
+        return TableLayout(image_state, balls_info, ball_ids, unused_ball_ids)
 
 
 class TableVision:
-    def __init__(self, image: np.ndarray | None = None, model_path=None, homography=None):
+    def __init__(self, image: np.ndarray | None = None, model_path=None, homography=None, ball_offset_alpha=0.25):
         if model_path is None:
             model_path = MODEL_PATH
         self.model = YOLO(model_path)
@@ -188,6 +207,7 @@ class TableVision:
         self.H = None
         if homography is not None:
             self.set_homography(homography)
+        self.ball_offset_alpha = ball_offset_alpha
 
     def set_homography(self, homography):
         homography = np.asarray(homography, dtype=float)
@@ -231,8 +251,6 @@ class TableVision:
                     ball_classes.add(cls_id)
                 elif cls_id == POCKET_ID:
                     pocket_detections.append(detection)
-                else:
-                    print(f"{cls_name} detected, conf={conf}")
 
         self.image_state = ImageState(
             image=image,
@@ -448,7 +466,6 @@ class TableVision:
 
         return self.image_state
 
-
     def order_3_pockets(self, pockets):
         if len(pockets) != 3:
             raise ValueError(f"Instance of pockets must be 3, got {len(pockets)}.")
@@ -513,7 +530,6 @@ class TableVision:
         err_forward = np.mean(
             np.linalg.norm(mapped - dst_points, axis=1) ** 2
         )
-        print(err_forward)
 
         H_inv = np.linalg.inv(H)
         mapped = cv2.perspectiveTransform(
@@ -528,10 +544,8 @@ class TableVision:
         pairs_diff = pairs[:, 0] - pairs[:, 1]
         max_dist = np.linalg.norm(pairs_diff, axis=1).max()
         err_backward_norm = err_backward / (max_dist ** 2)
-        print(err_backward, err_backward_norm)
 
         return err_forward + err_backward_norm
-
 
     @staticmethod
     def _sort_rail(rail):
@@ -565,7 +579,7 @@ class TableVision:
             "rt": r2[2],
         }
 
-    def find_5_pocket_identities(self, image_state: ImageState=None):
+    def find_5_pocket_identities(self, image_state: ImageState = None):
         if image_state is None:
             image_state = self.image_state
         pockets = image_state.pockets
@@ -615,8 +629,8 @@ class TableVision:
                 ).reshape(2)
                 height, width = image_state.image.shape[:2]
                 missing_is_visible = (
-                    0 <= missing_position[0] < width
-                    and 0 <= missing_position[1] < height
+                        0 <= missing_position[0] < width
+                        and 0 <= missing_position[1] < height
                 )
 
                 score = line_err_1 + h_error + float(missing_is_visible)
@@ -626,7 +640,6 @@ class TableVision:
                 identities.append(identity)
 
         return identities, scores
-
 
     def find_pocket_identities(self, image_state: ImageState = None):
         if image_state is None:
@@ -670,8 +683,6 @@ class TableVision:
                 f"got {len(image_state.pockets)}."
             )
         pocket_identities, scores = self.find_pocket_identities(image_state)
-        print(pocket_identities)
-        print(scores)
 
         if not pocket_identities:
             raise RuntimeError("Could not determine pocket identities for homography calibration.")
@@ -693,6 +704,20 @@ class TableVision:
         self.set_homography(H)
         return self.H, mask
 
+    def _ball_pos_with_offset(self, image_state: ImageState = None, balls=None, alpha=0.25):
+        if image_state is None and balls is None:
+            image_state = self.image_state
+        if balls is None:
+            balls = image_state.balls
+
+        balls_pos = np.zeros([len(balls), 2], dtype=float)
+        for i, ball in enumerate(balls):
+            x1, y1, x2, y2 = ball.xyxy
+            height = abs(y1 - y2)
+            balls_pos[i] = ball.center - alpha * height
+
+        return balls_pos
+
     def transform_table_homography(self, image_state=None, H=None, preview=False) -> TableLayout:
         if image_state is None:
             image_state = self.image_state
@@ -703,11 +728,16 @@ class TableVision:
         if H is None:
             raise RuntimeError("No homography available. Calibrate or set one first.")
 
-        img_balls = image_state.balls
-        img_balls_pos = [ball.center for ball in img_balls]
+        img_balls_pos = self._ball_pos_with_offset(image_state, alpha=self.ball_offset_alpha)
         ball_pos_cv = np.asarray(img_balls_pos, dtype=float).reshape(-1, 1, 2)
 
         mapped = cv2.perspectiveTransform(ball_pos_cv, H).reshape(-1, 2)
+
+        unresolved_balls_pos = self._ball_pos_with_offset(balls=image_state.unresolved_balls,
+                                                          alpha=self.ball_offset_alpha)
+        unresolved_balls_cv = np.asarray(unresolved_balls_pos, dtype=float).reshape(-1, 1, 2)
+
+        mapped_unresolved = cv2.perspectiveTransform(unresolved_balls_cv, H).reshape(-1, 2)
 
         if preview:
             scale = 500
@@ -733,10 +763,9 @@ class TableVision:
             cv2.waitKey(0)
             cv2.destroyAllWindows()
 
-        return self.build_table_layout(image_state, mapped)
+        return self.build_table_layout(image_state, mapped, mapped_unresolved)
 
-
-    def build_table_layout(self, image_state, mapped_balls: np.ndarray) -> TableLayout:
+    def build_table_layout(self, image_state, mapped_balls: np.ndarray, mapped_unresolved) -> TableLayout:
         img_balls = image_state.balls
         ball_classes = [ball.class_id for ball in img_balls]
 
@@ -749,12 +778,18 @@ class TableVision:
             ball_ids.add(ball_id)
         unused_ball_ids = set(BALL_CLASS_TO_ID.values()) - ball_ids
 
-        return TableLayout(image_state, balls_info, ball_ids, unused_ball_ids)
+        unresolved_classes = [ball.class_id for ball in image_state.unresolved_balls]
+        unresolved_balls_info = {}
+        for i, pos in enumerate(mapped_unresolved):
+            cls = unresolved_classes[i]
+            ball_id = BALL_CLASS_TO_ID[cls]
+            unresolved_balls_info[ball_id] = tuple(pos)
 
+        return TableLayout(image_state, balls_info, ball_ids, unused_ball_ids, unresolved_balls_info)
 
 
 if __name__ == "__main__":
-    test_img_path = Path(__file__).parent / "tests" / "test5.jpg"
+    test_img_path = Path(__file__).parent / "tests" / "test7.jpg"
     image = cv2.imread(str(test_img_path))
 
     table_vision = TableVision()

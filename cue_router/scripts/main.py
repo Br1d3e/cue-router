@@ -19,7 +19,7 @@ from cue_router.planner.two_ply_search import TwoPlyConfig, TwoPlySearch
 from table_vision.vision import TableVision
 
 chinese_table = ChineseTableSpecs.chinese_table
-MODE = "planner"
+MODE = "executor"
 VISUAL_SELECTOR = "vision"
 
 PLANNER_CONFIG = PlannerConfig(
@@ -81,6 +81,7 @@ def manual_layout_3():
         route_type="direct",
     )
 
+
 def manual_layout_4():
     return PlannerLayout(
         cue_ball_pos=(0.5192460533478496, 1.3362357103973876),
@@ -92,13 +93,18 @@ def manual_layout_4():
         }
     )
 
-def table_vision_layout(image=None):
+
+def table_vision_layout(image=None, mode=MODE):
     if image is None:
-        image = cv2.imread("../../table_vision/tests/test7.jpg")
-    vision = TableVision(image)
+        image = cv2.imread("../../table_vision/tests/test2.png")
+    vision = TableVision(image, ball_offset_alpha=0.0)
     table_layout = vision.predict_layout(preview=True)
-    # table_layout.flip_horizontal()
-    return table_layout.to_planner_layout()
+    table_layout.flip_horizontal()
+    table_layout = table_layout.full_unresolved_layout()
+    if mode == "planner":
+        return table_layout.to_planner_layout()
+    elif mode == "executor":
+        return select_executor_layout(table_layout)
 
 
 def build_search_request(layout: ExecutorLayout):
@@ -431,8 +437,8 @@ def main():
     elif MODE == "breakout":
         breakout_search(layout)
     elif MODE == "planner":
-        planner_1_ball(shot)
-        # planner_full(shot, True, False)
+        # planner_1_ball(shot)
+        planner_full(shot, True, False)
 
 
 if __name__ == "__main__":
