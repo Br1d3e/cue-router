@@ -1,5 +1,7 @@
 import pooltool as pt
 import time
+import cv2
+from pathlib import Path
 
 from cue_router.core.table import ChineseTableSpecs
 from cue_router.executor.search import PolicySearch, SearchConfig
@@ -14,9 +16,11 @@ from cue_router.core.request import BreakoutTarget, SearchRequest
 from cue_router.planner.planner_search import PlannerContext, PlannerSearch, PlannerConfig
 from cue_router.planner.two_ply_search import TwoPlyConfig, TwoPlySearch
 
+from table_vision.vision import TableVision
+
 chinese_table = ChineseTableSpecs.chinese_table
 MODE = "planner"
-VISUAL_SELECTOR = "planner"
+VISUAL_SELECTOR = "vision"
 
 PLANNER_CONFIG = PlannerConfig(
     display_k=5,
@@ -87,6 +91,14 @@ def manual_layout_4():
             '2': (0.044627109417528454, 1.6252259118127386)
         }
     )
+
+def table_vision_layout(image=None):
+    if image is None:
+        image = cv2.imread("../../table_vision/tests/test7.jpg")
+    vision = TableVision(image)
+    table_layout = vision.predict_layout(preview=True)
+    # table_layout.flip_horizontal()
+    return table_layout.to_planner_layout()
 
 
 def build_search_request(layout: ExecutorLayout):
@@ -400,6 +412,8 @@ def main():
         layout = select_executor_layout()
     elif VISUAL_SELECTOR == "planner":
         layout = select_planner_layout()
+    elif VISUAL_SELECTOR == "vision":
+        layout = table_vision_layout()
     elif MODE == "breakout":
         layout = manual_layout_3()
     else:
@@ -417,8 +431,8 @@ def main():
     elif MODE == "breakout":
         breakout_search(layout)
     elif MODE == "planner":
-        # planner_1_ball(layout, shot)
-        planner_full(shot, True, False)
+        planner_1_ball(shot)
+        # planner_full(shot, True, False)
 
 
 if __name__ == "__main__":

@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from itertools import permutations, combinations
 
 from cue_router.core.table import ChineseTableSpecs
+from cue_router.ui.layout import PlannerLayout, ExecutorLayout
+
 
 folder = Path(__file__).resolve().parent
 MODEL_PATH = folder / "models" / "yolo_3.pt"
@@ -140,6 +142,8 @@ class TableLayout:
     ball_ids: set[str] = field(default_factory=set)
     unused_ball_ids: set[str] = field(default_factory=set)
 
+    orientation:str | None = None
+
     def __repr__(self):
         return (f"TableLayout(\n"
                 f"  image_state={self.image_state},\n"
@@ -149,10 +153,28 @@ class TableLayout:
                 )
 
     def to_planner_layout(self):
-        ...
+        cue_ball_pos = self.balls_info["cue"]
+        other_balls_info = self.balls_info.copy()
+        other_balls_info.pop("cue")
+        return PlannerLayout(
+            cue_ball_pos=cue_ball_pos,
+            balls_info=other_balls_info,
+        )
 
     def to_executor_layout(self, target_ball, target_pocket, target_region):
         ...
+
+
+    def flip_horizontal(self, width=W):
+        for ball_id, pos in self.balls_info.items():
+            x, y = pos
+            self.balls_info[ball_id] = (width - x, y)
+        if self.orientation is None:
+            self.orientation = "horizontal_180"
+        elif self.orientation == "horizontal_180":
+            self.orientation = None
+
+        return self
 
 
 class TableVision:
@@ -480,17 +502,59 @@ class TableVision:
 
         return np.sqrt(lambda_min / (lambda_max + eps))
 
+    def sym_reprojection_error(self, src_points, dst_points, H=None):
+        if H is None:
+            H = self.H
+
+        mapped = cv2.perspectiveTransform(
+            src_points.reshape(-1, 1, 2), H
+        ).reshape(-1, 2)
+
+        err_forward = np.mean(
+            np.linalg.norm(mapped - dst_points, axis=1) ** 2
+        )
+        print(err_forward)
+
+        H_inv = np.linalg.inv(H)
+        mapped = cv2.perspectiveTransform(
+            dst_points.reshape(-1, 1, 2), H_inv
+        ).reshape(-1, 2)
+
+        err_backward = np.mean(
+            np.linalg.norm(mapped - src_points, axis=1) ** 2
+        )
+
+        pairs = np.asarray(list(combinations(src_points, 2)))
+        pairs_diff = pairs[:, 0] - pairs[:, 1]
+        max_dist = np.linalg.norm(pairs_diff, axis=1).max()
+        err_backward_norm = err_backward / (max_dist ** 2)
+        print(err_backward, err_backward_norm)
+
+        return err_forward + err_backward_norm
+
+
+    @staticmethod
+    def _sort_rail(rail):
+        x_range = max(pocket.center[0] for pocket in rail) - min(pocket.center[0] for pocket in rail)
+        y_range = max(pocket.center[1] for pocket in rail) - min(pocket.center[1] for pocket in rail)
+        axis = 0 if x_range > y_range else 1
+        return sorted(rail, key=lambda pocket: pocket.center[axis], reverse=True)
+
+    @staticmethod
+    def _order_rails(r1, r2):
+        center_1 = np.mean([pocket.center for pocket in r1], axis=0)
+        center_2 = np.mean([pocket.center for pocket in r2], axis=0)
+        axis = np.argmax(np.abs(center_1 - center_2))
+        if center_1[axis] > center_2[axis]:
+            return r2, r1
+        return r1, r2
+
     def canonical_rail_pockets(self, two_rails: tuple[list, list]):
         r1, r2 = two_rails
 
-        def sort_rail(rail):
-            x_range = max(pocket.center[0] for pocket in rail) - min(pocket.center[0] for pocket in rail)
-            y_range = max(pocket.center[1] for pocket in rail) - min(pocket.center[1] for pocket in rail)
-            axis = 0 if x_range > y_range else 1
-            return sorted(rail, key=lambda pocket: pocket.center[axis], reverse=True)
-
-        r1 = sort_rail(r1)
-        r2 = sort_rail(r2)
+        r1, r2 = self._order_rails(r1, r2)
+        r1 = self._sort_rail(r1)
+        r2 = self._sort_rail(r2)
 
         return {
             "lb": r1[0],
@@ -501,16 +565,81 @@ class TableVision:
             "rt": r2[2],
         }
 
+    def find_5_pocket_identities(self, image_state: ImageState=None):
+        if image_state is None:
+            image_state = self.image_state
+        pockets = image_state.pockets
+
+        if len(pockets) != 5:
+            return [], []
+
+        scores = []
+        identities = []
+        for s1 in combinations(pockets, 3):
+            s2 = tuple([p for p in pockets if p not in s1])
+
+            line_err_1 = self.pca_line_error(s1, eps=0.2)
+            if line_err_1 > VALID_RAIL_POCKETS_THRESHOLD:
+                continue
+
+            r1 = self._sort_rail(s1)
+            r2 = self._sort_rail(s2)
+            r1, r2 = self._order_rails(r1, r2)
+
+            left_pockets = ["lb", "lc", "lt"]
+            right_pockets = ["rb", "rc", "rt"]
+            missing_candidates = left_pockets if len(r1) == 2 else right_pockets
+            for missing_pocket in missing_candidates:
+                canonical_left = [pocket for pocket in left_pockets if pocket != missing_pocket]
+                canonical_right = [pocket for pocket in right_pockets if pocket != missing_pocket]
+                canonical_5_pockets = canonical_left + canonical_right
+
+                pocket_centers = [pocket.center for pocket in r1 + r2]
+                canonical_centers = [CANONICAL_POCKETS[pocket] for pocket in canonical_5_pockets]
+
+                src_points = np.asarray(pocket_centers, dtype=float)
+                dst_points = np.asarray(canonical_centers, dtype=float)
+
+                fit_indices = [0, 1, 2, 4] if len(r1) == 2 else [0, 2, 3, 4]
+                src_4_points = src_points[fit_indices]
+                dst_4_points = dst_points[fit_indices]
+
+                H, _ = cv2.findHomography(src_4_points, dst_4_points)
+                h_error = self.sym_reprojection_error(src_points, dst_points, H=H)
+
+                missing_position = np.asarray(
+                    CANONICAL_POCKETS[missing_pocket], dtype=float
+                ).reshape(1, 1, 2)
+                missing_position = cv2.perspectiveTransform(
+                    missing_position, np.linalg.inv(H)
+                ).reshape(2)
+                height, width = image_state.image.shape[:2]
+                missing_is_visible = (
+                    0 <= missing_position[0] < width
+                    and 0 <= missing_position[1] < height
+                )
+
+                score = line_err_1 + h_error + float(missing_is_visible)
+                identity = dict([(pocket, pos) for pocket, pos in zip(canonical_5_pockets, r1 + r2)])
+
+                scores.append(float(score))
+                identities.append(identity)
+
+        return identities, scores
+
+
     def find_pocket_identities(self, image_state: ImageState = None):
         if image_state is None:
             image_state = self.image_state
 
         pockets = image_state.pockets
 
+        if len(pockets) == 5:
+            return self.find_5_pocket_identities(image_state)
         if len(pockets) != 6:
             return [], []
 
-        rails = []
+        identities = []
         scores = []
         complements = []
         for s1 in combinations(pockets, 3):
@@ -525,12 +654,8 @@ class TableVision:
             # score_2 = self.pca_line_error(s2, eps=0.2)
 
             if score_1 < VALID_RAIL_POCKETS_THRESHOLD and score_2 < VALID_RAIL_POCKETS_THRESHOLD:
-                rails.append((s1, s2))
-                scores.append((score_1, score_2))
-
-        identities = []
-        for pair in rails:
-            identities.append(self.canonical_rail_pockets(pair))
+                identities.append(self.canonical_rail_pockets((s1, s2)))
+                scores.append(score_1 + score_2)
 
         return identities, scores
 
@@ -539,21 +664,26 @@ class TableVision:
             image_state = self.image_state
         if image_state is None:
             raise ValueError("No ImageState found.")
-        if len(image_state.pockets) != 6:
+        if len(image_state.pockets) not in (5, 6):
             raise RuntimeError(
-                "Automatic homography calibration requires 6 resolved pockets, "
+                "Automatic homography calibration requires 5 or 6 resolved pockets, "
                 f"got {len(image_state.pockets)}."
             )
         pocket_identities, scores = self.find_pocket_identities(image_state)
+        print(pocket_identities)
+        print(scores)
 
         if not pocket_identities:
             raise RuntimeError("Could not determine pocket identities for homography calibration.")
 
-        best_idx = min(range(len(scores)), key=lambda i: sum(scores[i]))
+        best_idx = min(range(len(scores)), key=lambda i: scores[i])
         pockets = pocket_identities[best_idx]
         pocket_centers = [pocket.center for pocket in pockets.values()]
         src_points = np.asarray(pocket_centers, dtype=float)
-        dst_points = np.asarray(list(CANONICAL_POCKETS.values()), dtype=float)
+        dst_points = np.asarray(
+            [CANONICAL_POCKETS[pocket_id] for pocket_id in pockets],
+            dtype=float,
+        )
 
         H, mask = cv2.findHomography(src_points, dst_points, method=0)
 
@@ -624,7 +754,7 @@ class TableVision:
 
 
 if __name__ == "__main__":
-    test_img_path = Path(__file__).parent / "tests" / "test7.jpg"
+    test_img_path = Path(__file__).parent / "tests" / "test5.jpg"
     image = cv2.imread(str(test_img_path))
 
     table_vision = TableVision()
