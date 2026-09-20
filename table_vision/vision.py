@@ -44,10 +44,10 @@ POCKET_ID = 11
 
 BALL_OVERLAP_IOU = 0.80
 BALL_OVERLAP_CENTER_DIST = 0.10
-POCKET_OVERLAP_IOU = 0.30
+POCKET_OVERLAP_IOU = 0.2
 BALL_CLASS_DUPE_CONF = 0.6
 BALL_CLASS_DUPE_CONF_DIFF = 0.3
-POCKET_MIN_CONF = 0.7
+POCKET_MIN_CONF = 0.1
 
 VALID_RAIL_POCKETS_THRESHOLD = 0.10
 
@@ -72,6 +72,7 @@ BALL_CLASS_TO_ID = {
 
 L = ChineseTableSpecs.TABLE_LENGTH
 W = ChineseTableSpecs.TABLE_WIDTH
+R = ChineseTableSpecs.BALL_RADIUS
 CANONICAL_POCKETS = {
     pocket_id: tuple(ChineseTableSpecs.chinese_table.pockets[pocket_id].center[:2])
     for pocket_id in ChineseTableSpecs.POCKET_ID
@@ -227,8 +228,8 @@ class TableVision:
         results = self.model.predict(
             source=image,
             imgsz=960,
-            conf=0.5,
-            iou=0.5,
+            conf=0.1,
+            iou=0.3,
             save=False,
             verbose=False,
         )
@@ -547,6 +548,26 @@ class TableVision:
 
         return err_forward + err_backward_norm
 
+    def table_containment_error(self, balls: list[Detection], H=None, table_length=L, table_width=W):
+        if H is None:
+            H = self.H
+
+        balls_pos = self._ball_pos_with_offset(balls=balls)
+        mapped = cv2.perspectiveTransform(
+            balls_pos.reshape(-1, 1, 2), H
+        ).reshape(-1, 2)
+
+
+        contain = (
+                (mapped[:, 1] >= 0) &
+                (mapped[:, 1] <= table_length) &
+                (mapped[:, 0] >= 0) &
+                (mapped[:, 0] <= table_width)
+        )
+
+        return 1 - contain.sum() / len(balls)
+
+
     @staticmethod
     def _sort_rail(rail):
         x_range = max(pocket.center[0] for pocket in rail) - min(pocket.center[0] for pocket in rail)
@@ -583,6 +604,7 @@ class TableVision:
         if image_state is None:
             image_state = self.image_state
         pockets = image_state.pockets
+        balls = image_state.balls
 
         if len(pockets) != 5:
             return [], []
@@ -628,12 +650,15 @@ class TableVision:
                     missing_position, np.linalg.inv(H)
                 ).reshape(2)
                 height, width = image_state.image.shape[:2]
-                missing_is_visible = (
-                        0 <= missing_position[0] < width
-                        and 0 <= missing_position[1] < height
-                )
+                # missing_is_visible = (
+                #         0 <= missing_position[0] < width
+                #         and 0 <= missing_position[1] < height
+                # )
 
-                score = line_err_1 + h_error + float(missing_is_visible)
+                # score = line_err_1 + h_error + float(missing_is_visible)
+
+                contain_error = self.table_containment_error(balls, H)
+                score = line_err_1 + h_error + contain_error
                 identity = dict([(pocket, pos) for pocket, pos in zip(canonical_5_pockets, r1 + r2)])
 
                 scores.append(float(score))
@@ -672,7 +697,7 @@ class TableVision:
 
         return identities, scores
 
-    def calibrate_pocket_homography(self, image_state: ImageState = None):
+    def calibrate_pocket_homography(self, image_state: ImageState=None):
         if image_state is None:
             image_state = self.image_state
         if image_state is None:
@@ -714,7 +739,7 @@ class TableVision:
         for i, ball in enumerate(balls):
             x1, y1, x2, y2 = ball.xyxy
             height = abs(y1 - y2)
-            balls_pos[i] = ball.center - alpha * height
+            balls_pos[i] = np.asarray([ball.center[0], ball.center[1] - alpha * height], dtype=float)
 
         return balls_pos
 
@@ -733,11 +758,13 @@ class TableVision:
 
         mapped = cv2.perspectiveTransform(ball_pos_cv, H).reshape(-1, 2)
 
-        unresolved_balls_pos = self._ball_pos_with_offset(balls=image_state.unresolved_balls,
-                                                          alpha=self.ball_offset_alpha)
-        unresolved_balls_cv = np.asarray(unresolved_balls_pos, dtype=float).reshape(-1, 1, 2)
-
-        mapped_unresolved = cv2.perspectiveTransform(unresolved_balls_cv, H).reshape(-1, 2)
+        if not image_state.unresolved_balls:
+            mapped_unresolved = None
+        else:
+            unresolved_balls_pos = self._ball_pos_with_offset(balls=image_state.unresolved_balls,
+                                                              alpha=self.ball_offset_alpha)
+            unresolved_balls_cv = np.asarray(unresolved_balls_pos, dtype=float).reshape(-1, 1, 2)
+            mapped_unresolved = cv2.perspectiveTransform(unresolved_balls_cv, H).reshape(-1, 2)
 
         if preview:
             scale = 500
@@ -771,12 +798,16 @@ class TableVision:
 
         balls_info = {}
         ball_ids = set()
+        mapped_balls = self.correct_ball_pos(mapped_balls)
         for i, pos in enumerate(mapped_balls):
             cls = ball_classes[i]
             ball_id = BALL_CLASS_TO_ID[cls]
             balls_info[ball_id] = tuple(pos)
             ball_ids.add(ball_id)
         unused_ball_ids = set(BALL_CLASS_TO_ID.values()) - ball_ids
+
+        if not image_state.unresolved_balls or mapped_unresolved is None:
+            return TableLayout(image_state, balls_info, ball_ids, unused_ball_ids)
 
         unresolved_classes = [ball.class_id for ball in image_state.unresolved_balls]
         unresolved_balls_info = {}
@@ -787,9 +818,54 @@ class TableVision:
 
         return TableLayout(image_state, balls_info, ball_ids, unused_ball_ids, unresolved_balls_info)
 
+    def correct_ball_pos(self, mapped_balls: np.ndarray, threshold=0.1, table_length=L, table_width=W,
+                         r=R, epsilon=0.002):
+        """
+        Checks ball radius against cushions and other balls;
+        Corrects their positions if invalid
+        :param mapped_balls: homography transformed ball positions in ndarray
+        :return: corrected_balls: corrected ball positions
+        """
+        corrected_balls = np.zeros_like(mapped_balls, dtype=float)
+        for i, pos in enumerate(mapped_balls):
+            x, y = pos
+            corrected_balls[i][0] = min(max(x, r + epsilon), table_width - r - epsilon)
+            corrected_balls[i][1] = min(max(y, r +epsilon), table_length - r - epsilon)
+
+        min_distance = 2 * r + 1e-6
+        for _ in range(200):
+            for i, j in combinations(range(len(corrected_balls)), 2):
+                delta = corrected_balls[j] - corrected_balls[i]
+                distance = np.linalg.norm(delta)
+                if distance >= min_distance:
+                    continue
+                direction = delta / distance if distance > 0 else np.array([1.0, 0.0])
+                correction = direction * (min_distance - distance) / 2
+                corrected_balls[i] -= correction
+                corrected_balls[j] += correction
+                corrected_balls[[i, j]] = np.clip(
+                    corrected_balls[[i, j]], r, [table_width - r, table_length - r]
+                )
+
+            if all(
+                np.linalg.norm(corrected_balls[j] - corrected_balls[i]) >= min_distance - 1e-8
+                for i, j in combinations(range(len(corrected_balls)), 2)
+            ):
+                break
+        else:
+            raise ValueError("Could not separate overlapping balls within the table bounds.")
+
+        for i in range(len(corrected_balls)):
+            dist = np.linalg.norm(corrected_balls[i] - mapped_balls[i])
+            if dist > threshold:
+                print(f"[Warning] Large correction: {dist:.2f}m. original={mapped_balls[i]}, corrected={corrected_balls[i]}")
+
+        return corrected_balls
+
+
 
 if __name__ == "__main__":
-    test_img_path = Path(__file__).parent / "tests" / "test7.jpg"
+    test_img_path = Path(__file__).parent / "tests" / "test8.jpg"
     image = cv2.imread(str(test_img_path))
 
     table_vision = TableVision()

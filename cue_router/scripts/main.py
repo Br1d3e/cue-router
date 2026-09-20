@@ -96,10 +96,10 @@ def manual_layout_4():
 
 def table_vision_layout(image=None, mode=MODE):
     if image is None:
-        image = cv2.imread("../../table_vision/tests/test2.png")
+        image = cv2.imread("../../table_vision/tests/test11.jpg")
     vision = TableVision(image, ball_offset_alpha=0.0)
     table_layout = vision.predict_layout(preview=True)
-    table_layout.flip_horizontal()
+    # table_layout.flip_horizontal()
     table_layout = table_layout.full_unresolved_layout()
     if mode == "planner":
         return table_layout.to_planner_layout()

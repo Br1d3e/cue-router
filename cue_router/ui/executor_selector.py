@@ -100,7 +100,7 @@ class ExecutorLayoutSelector:
             ball.set_gid(ball_id)
             self.artists_by_mode["other_balls"].append(ball)
 
-        self.mode_sequence = ["target_ball", "pocket", "target_region"]
+        self.mode_sequence = ["target_ball", "pocket", "route_type", "target_region"]
         self.mode_idx = 0
         self.current_mode = self.mode_sequence[0]
         self.mode_history.clear()
