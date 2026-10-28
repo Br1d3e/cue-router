@@ -97,6 +97,7 @@ class Detection:
             f"Detection(\n"
             f"   id={self.id}\n"
             f"   class_id={self.class_id}\n"
+            f"   class_name={self.class_name}\n"
             f"   xyxy={self.xyxy}\n"
             f"   confidence={self.confidence:.3f}\n"
             f")"
@@ -267,9 +268,10 @@ class TableVision:
         self.predict(image)
         return self.resolve_image_state()
 
-    def predict_layout(self, image=None, *, recalibrate=False, preview=False) -> TableLayout:
+    def predict_layout(self, image=None, *, image_state=None, recalibrate=False, preview=False) -> TableLayout:
         """Predict one image and return physical table coordinates."""
-        image_state = self.predict_state(image)
+        if image_state is None or not isinstance(image_state, ImageState):
+            image_state = self.predict_state(image)
         if recalibrate or self.H is None:
             self.calibrate_pocket_homography(image_state)
         return self.transform_table_homography(image_state, preview=preview)
@@ -703,14 +705,16 @@ class TableVision:
         if image_state is None:
             raise ValueError("No ImageState found.")
         if len(image_state.pockets) not in (5, 6):
-            raise RuntimeError(
-                "Automatic homography calibration requires 5 or 6 resolved pockets, "
-                f"got {len(image_state.pockets)}."
-            )
+            # raise RuntimeError(
+            #     "Automatic homography calibration requires 5 or 6 resolved pockets, "
+            #     f"got {len(image_state.pockets)}."
+            # )
+            raise RuntimeError("NOT_ENOUGH_POCKETS")
         pocket_identities, scores = self.find_pocket_identities(image_state)
 
         if not pocket_identities:
-            raise RuntimeError("Could not determine pocket identities for homography calibration.")
+            # raise RuntimeError("Could not determine pocket identities for homography calibration.")
+            raise RuntimeError("POCKET_IDENTITIES_NOT_FOUND")
 
         best_idx = min(range(len(scores)), key=lambda i: scores[i])
         pockets = pocket_identities[best_idx]
