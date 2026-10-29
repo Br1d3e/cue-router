@@ -5,9 +5,17 @@ from nicegui import run, ui
 import numpy as np
 from pathlib import Path
 from PIL import Image
+from enum import Enum, auto
+from dataclasses import dataclass
+
+from nicegui.events import ValueChangeEventArguments
+
+from cue_router.planner.planner_search import PlannerSearch
+from cue_router.ui.layout import ExecutorLayout, PlannerLayout
 
 from table_vision.vision import TableVision, TableLayout, Detection
 from cue_router.core.table import ChineseTableSpecs
+from cue_router.core.geometry import LineSegment, Rect, PositionTarget
 
 MODEL_PATH = Path(__file__).parent.parent.parent / "table_vision" / "models" / "yolo_3.pt"
 
@@ -49,10 +57,37 @@ BALL_COLORS = {
     "15": ["#C27730", "white"],
 }
 
-SELECTION_SEQUENCE = ["cue_ball", "target_ball", "pocket", "route_type", "other_balls", "target_region"]
+EXECUTOR_SELECTION_SEQUENCE = ["target_ball", "pocket", "target_region"]
+
+class Stage(Enum):
+    UPLOAD = auto()
+    MANUAL_POCKETS = auto()
+    REVIEW = auto()
+    SELECT = auto()
+    EXECUTE = auto()
+
+    def __repr__(self):
+        return self.name
+
+@dataclass
+class ExecutorSelection:
+    target_ball_id: str = None
+    target_pocket_id: str = None
+    target_region_type: type[PositionTarget] | None = None
+    pending_corner: tuple[int, int] = None
+    target_region: PositionTarget = None
+    route_type: str = "direct"
+
+    def is_complete(self):
+        return all([self.target_ball_id, self.target_pocket_id, self.target_region, self.route_type])
 
 def to_screen(x, y):
     return M + y / L * PLAY_WIDTH, M + x / W * PLAY_HEIGHT
+
+def in_table(x, y, allow_margin=False):
+    if allow_margin:
+        return 0 <= x <= PLAY_WIDTH + 2 * M and 0 <= y <= PLAY_HEIGHT + 2 * M
+    return M <= x <= M + PLAY_WIDTH and M <= y <= M + PLAY_HEIGHT
 
 def render_svg(layout: TableLayout):
     parts = [
@@ -62,7 +97,7 @@ def render_svg(layout: TableLayout):
 
     for px, py in POCKETS_SCREEN.values():
         parts.append(
-            f'<circle cx="{px}" cy="{py}" r="{R_POCKET}" fill="#101515"/>'
+            f'<circle cx="{px}" cy="{py}" r="{R_POCKET}" fill="2C2C2C" opacity="0.8"/>'
         )
 
     if layout is None:
@@ -130,8 +165,24 @@ def render_rect(img, x1, y1, x2, y2):
     img.content += rect
     return img
 
+def redraw_regions(content, regions, pending_corner=None, region_type: type[PositionTarget] = Rect):
+    """Draw rectangle or line annotations using image/screen coordinates."""
+    parts = []
+    for x1, y1, x2, y2 in regions:
+        if region_type is LineSegment:
+            shape = f'<line x1="{x1}" y1="{y1}" x2="{x2}" y2="{y2}" '
+        else:
+            shape = (
+                f'<rect x="{min(x1, x2)}" y="{min(y1, y2)}" '
+                f'width="{abs(x2 - x1)}" height="{abs(y2 - y1)}" '
+            )
+        parts.append(shape + 'fill="none" stroke="red" stroke-width="3" pointer-events="none" />')
+    if pending_corner is not None:
+        x, y = pending_corner
+        parts.append(f'<circle cx="{x}" cy="{y}" r="5" fill="yellow" pointer-events="none" />')
+    content.set_content("".join(parts))
+
 def render_ball_selector(content, x, y, del_button=False):
-    """Replace the selector layer with a panel centered at image coordinates (x, y)."""
     cell = 44
     padding = 8
     width = 8 * cell + 2 * padding + (cell if del_button else 0)
@@ -168,225 +219,382 @@ def render_ball_selector(content, x, y, del_button=False):
         ])
     content.set_content("".join(parts))
 
+def render_circle_highlight(content, x, y, r):
+    highlight = f'<circle cx="{x}" cy="{y}" r="{r+2}" fill="purple" opacity="0.7" stroke="black" stroke_width="4" stroke-dasharray="3" />'
+    content.set_content(content.content + highlight)
+
 @ui.page("/")
 def page():
-    ui.page_title("CueRouter Demo")
-    ui.label("CueRouter Demo")
+        ui.page_title("CueRouter Demo")
+        ui.label("CueRouter Demo")
 
-    state = {
-        "captured_image": None,
-        "layout": None,
-        "mode": "Executor",
-        "balls_screen": {},
-        "unresolved_balls_screen": {},
-        "stage": "upload",
-        "pocket_rects": {},
-        "pending_corner": None,
-        "selected_ball": None,
-    }
+        state = {
+            "captured_image": None,
+            "layout": None,
+            "mode": "Executor",
+            "balls_screen": {},
+            "unresolved_balls_screen": {},
+            "stage": Stage.UPLOAD,
+            "selection": None,
+            "pocket_rects": {},
+            "pending_corner": None,
+            "selected_ball": None,
+        }
 
-    def next_stage(stage):
-        if stage in ["upload", "manual_pockets"]:
-            stage = "check_table"
-        elif stage == "check_table":
-            stage = SELECTION_SEQUENCE[0]
-        elif stage in SELECTION_SEQUENCE:
-            i = SELECTION_SEQUENCE.index(stage)
-            if i == len(SELECTION_SEQUENCE):
-                stage = "done"
-            else:
-                stage = SELECTION_SEQUENCE[i+1]
+        def next_stage(stage: Stage, next_state_func=None):
+            stage = deepcopy(stage)
+            if stage in [Stage.UPLOAD, Stage.MANUAL_POCKETS]:
+                stage = Stage.REVIEW
+            elif stage == Stage.REVIEW:
+                if "cue" not in state["balls_screen"].keys():
+                    ui.notify("[⚠ Warning] No cue ball selected.")
+                state["unresolved_balls_screen"] = None
+                state["layout"].unresolved_balls_info.clear()
+                stage = Stage.SELECT
+            elif stage == Stage.SELECT:
+                stage = Stage.EXECUTE
 
-        state_msg.set_text("Stage: " + stage)
-        # if selection_stage not in SELECTION_SEQUENCE:
-        #     raise ValueError(f"Invalid selection stage: {selection_stage}")
-        # i = SELECTION_SEQUENCE.index(selection_stage)
-        # if i == len(SELECTION_SEQUENCE) - 1:
-        #     ...
-        # selection_stage = SELECTION_SEQUENCE[i]
-        return stage
+            state["stage"] = stage
+            state_msg.set_text(f"Stage: {stage}")
+            render_controls.refresh()
 
-    async def on_upload(e):
-        image_bytes = await e.file.read()
-        image = cv2.imdecode(
-            np.frombuffer(image_bytes, dtype=np.uint8),
-            cv2.IMREAD_COLOR
-        )
-        vision = TableVision(image, model_path=MODEL_PATH)
+            if callable(next_state_func):
+                next_state_func()
+            return stage
 
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        state["captured_image"] = Image.fromarray(image)
-        captured_image.set_source(state["captured_image"])
+        def next_selection(selection):
+            # i = EXECUTOR_SELECTION_SEQUENCE.index(selection)
+            # if i == len(EXECUTOR_SELECTION_SEQUENCE) - 1:
+            #     selection = None
+            # else:
+            #     selection = EXECUTOR_SELECTION_SEQUENCE[i + 1]
 
-        try:
-            state["layout"] = vision.predict_layout(preview=False)
-            cache_balls()
-            state["stage"] = next_stage(state["stage"])
-            table.set_content(render_svg(state["layout"]))
-        except RuntimeError as e:
-            if str(e) == "NOT_ENOUGH_POCKETS":
-                ui.notify("Automatic pocket calibration requires ≥ 5 pockets. Label the pockets or retake an image.")
-            elif str(e) == "POCKET_IDENTITIES_NOT_FOUND":
-                ui.notify("Could not determine pocket identities for homography calibration. Correct the pocket labels or retake an image.")
-            image_state = vision.image_state
-            state["stage"] = "manual_pockets"
-            state_msg.set_text("Stage: Manually label pockets")
-            for i, detection in enumerate(image_state.pockets):
-                x1, y1, x2, y2 = detection.xyxy
-                render_rect(captured_image, x1, y1, x2, y2)
-                state["pocket_rects"][i] = detection.xyxy
+            if selection == "target_ball":
+                selection = "pocket"
+                selection_msg.set_text("Select a target pocket.")
+            elif selection == "pocket":
+                selection = "target_region"
+                selection_msg.set_text("Choose a target region type first. Then click the opposite corners of the region.")
+                ui.button("Line Segment",
+                          on_click=lambda f: update_executor_selection("target_region_type", LineSegment))
+                ui.button("Rectangle", on_click=lambda f: update_executor_selection("target_region_type", Rect))
+            # elif selection == "target_region":
+            #     ...
 
-            def on_finish():
-                detections = []
-                for i, new_pos in state["pocket_rects"].items():
-                    detections.append(Detection(
-                        id=i,
-                        class_id=11,
-                        class_name="pocket",
-                        xyxy=new_pos,
-                        confidence=1,
-                    ))
-                new_image_state = deepcopy(image_state)
-                new_image_state.pockets = detections
-                try:
-                    state["layout"] = vision.predict_layout(image_state=new_image_state)
-                    state["stage"] = next_stage(state["stage"])
-                    ui.notify("Layout generation successful.")
-                    # state_msg.set_text("Check Table Layout")
-                    table.set_content(render_svg(state["layout"]))
-                    cache_balls()
+            state["selection"] = selection
+
+            return selection
+
+        async def on_upload(e):
+            image_bytes = await e.file.read()
+            image = cv2.imdecode(
+                np.frombuffer(image_bytes, dtype=np.uint8),
+                cv2.IMREAD_COLOR
+            )
+            vision = TableVision(image, model_path=MODEL_PATH)
+
+            image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            state["captured_image"] = Image.fromarray(image)
+            captured_image.set_source(state["captured_image"])
+            state["stage"] = Stage.UPLOAD
+
+            try:
+                state["layout"] = vision.predict_layout(preview=False)
+                cache_balls()
+                state["stage"] = next_stage(state["stage"])
+                table.set_content(render_svg(state["layout"]))
+            except RuntimeError as e:
+                if str(e) == "NOT_ENOUGH_POCKETS":
+                    ui.notify("Automatic pocket calibration requires ≥ 5 pockets. Label the pockets or retake an image.")
+                elif str(e) == "POCKET_IDENTITIES_NOT_FOUND":
+                    ui.notify("Could not determine pocket identities for homography calibration. Correct the pocket labels or retake an image.")
+                image_state = vision.image_state
+                state["stage"] = Stage.MANUAL_POCKETS
+                state_msg.set_text(f"Stage: {state["stage"]}")
+                for i, detection in enumerate(image_state.pockets):
+                    x1, y1, x2, y2 = detection.xyxy
+                    render_rect(captured_image, x1, y1, x2, y2)
+                    state["pocket_rects"][i] = detection.xyxy
+
+                def on_finish():
+                    detections = []
+                    for i, new_pos in state["pocket_rects"].items():
+                        detections.append(Detection(
+                            id=i,
+                            class_id=11,
+                            class_name="pocket",
+                            xyxy=new_pos,
+                            confidence=1,
+                        ))
+                    new_image_state = deepcopy(image_state)
+                    new_image_state.pockets = detections
+                    try:
+                        state["layout"] = vision.predict_layout(image_state=new_image_state)
+                        state["stage"] = next_stage(state["stage"])
+                        ui.notify("Layout generation successful.")
+                        table.set_content(render_svg(state["layout"]))
+                        cache_balls()
+                        return
+                    except RuntimeError as e:
+                        ui.notify("Retry")
+                        state["stage"] = Stage.MANUAL_POCKETS
+
+                if state["stage"] != Stage.MANUAL_POCKETS:
                     return
-                except RuntimeError as e:
-                    ui.notify("Retry")
-                    state["stage"] = "manual_pockets"
 
-            if state["stage"] != "manual_pockets":
+                ui.button("Finish manual label", on_click=on_finish)
+
+        ui.upload(
+            on_upload=on_upload,
+            auto_upload=True,
+        ).props("accept=image/*")
+
+
+        def on_table_click(e):
+            ball_selector.set_content("")
+            state["selected_ball"] = None
+            if state["stage"] not in [Stage.REVIEW, Stage.SELECT]:
                 return
+            x, y = e.image_x, e.image_y
+            res = resolve_screen_pos(x, y, balls_screen=state["balls_screen"], unresolved_balls_screen=state["unresolved_balls_screen"])
 
-            next_button = ui.button("Finish manual label", on_click=on_finish)
+            if state["stage"] == Stage.REVIEW:
+                if res["type"] == "pocket" or not in_table(x, y):
+                    return
+                state["selected_ball"] = (res, ((y - M) / PLAY_HEIGHT * W, (x - M) / PLAY_WIDTH * L))
+                render_ball_selector(ball_selector, x, y + R_BALL + 60, del_button=res["type"] != "table")
+            elif state["stage"] == Stage.SELECT:
+                if not in_table(x, y, allow_margin=True):
+                    return
+                if state["selection"] == "target_ball":
+                    if res["type"] == "ball":
+                        if res["id"] == "cue":
+                            selection_msg.set_text("Cannot select the cue ball. Choose a colored ball.")
+                            return
+                        screen_x, screen_y = state["balls_screen"][res["id"]]
+                        if state["executor_selection"].target_ball_id == res["id"]:
+                            selection_msg.set_text(f"Confirmed selecting target ball #{res["id"]}")
+                            next_selection(state["selection"])
+                            render_circle_highlight(ball_selector, screen_x, screen_y, R_BALL)
+                        else:
+                            ball_selector.set_content("")
+                            state["executor_selection"].target_ball_id = res["id"]
+                            selection_msg.set_text(f"Selected target ball #{res['id']}. Click it again to confirm.")
+                            render_circle_highlight(ball_selector, screen_x, screen_y, R_BALL)
+                    else:
+                        state["executor_selection"].target_ball_id = None
+                        ball_selector.set_content("")
+                        selection_msg.set_text(f"Select a target ball to continue.")
+                elif state["selection"] == "pocket":
+                    if res["type"] == "pocket":
+                        screen_x, screen_y = POCKETS_SCREEN[res["id"]]
+                        if state["executor_selection"].target_pocket_id == res["id"]:
+                            selection_msg.set_text(f"Confirmed selecting pocket {res['id']}.")
+                            next_selection(state["selection"])
+                            render_circle_highlight(ball_selector, screen_x, screen_y, R_POCKET)
+                        else:
+                            ball_selector.set_content("")
+                            state["executor_selection"].target_pocket_id = res["id"]
+                            selection_msg.set_text(f"Selected pocket {res['id']}. Click it again to confirm.")
+                            render_circle_highlight(ball_selector, screen_x, screen_y, R_POCKET)
+                    else:
+                        state["executor_selection"].target_pocket_id = None
+                        ball_selector.set_content("")
+                        selection_msg.set_text(f"Select a target pocket to continue.")
+                elif state["selection"] == "target_region":
+                    selection = state["executor_selection"]
+                    if selection.target_region_type is None:
+                        selection_msg.set_text("Choose a position target type: Line or Rectangle. Then click two endpoints or opposite corners.")
+                        return
+                    if selection.pending_corner is None:
+                        selection.pending_corner = x, y
+                        selection.target_region = None
+                        redraw_regions(ball_selector, [], selection.pending_corner, selection.target_region_type)
+                    else:
+                        x1, y1 = selection.pending_corner
+                        x2, y2 = x, y
+                        selection.target_region = selection.target_region_type(x1, y1, x2, y2)
+                        selection.pending_corner = None
+                        redraw_regions(ball_selector, [(x1, y1, x2, y2)], region_type=selection.target_region_type)
+                        selection_msg.set_text("Selected target region. Click Next to execute.")
+                        state["executor_layout"] = build_executor_layout(state["executor_selection"])
+                        ui.button("Next", on_click=lambda f: next_stage(state["stage"]))
 
-    ui.upload(
-        on_upload=on_upload,
-        auto_upload=True,
-    ).props("accept=image/*")
-
-    def on_table_click(e):
-        ball_selector.set_content("")
-        state["selected_ball"] = None
-        if state["stage"] != "check_table":
-            return
-        x, y = e.image_x, e.image_y
-        res = resolve_screen_pos(x, y, balls_screen=state["balls_screen"], unresolved_balls_screen=state["unresolved_balls_screen"])
-        if res["type"] == "pocket" or not (M <= x <= M + PLAY_WIDTH and M <= y <= M + PLAY_HEIGHT):
-            return
-        state["selected_ball"] = (res, ((y - M) / PLAY_HEIGHT * W, (x - M) / PLAY_WIDTH * L))
-        render_ball_selector(ball_selector, x, y + R_BALL + 60, del_button=res["type"] != "table")
-
-    def on_ball_select(e):
-        if state["stage"] != "check_table" or state["selected_ball"] is None:
-            return
-        element_id = e.args["element_id"]
-        if element_id != "delete-ball" and not element_id.startswith("select-"):
-            return
-        res, pos = state["selected_ball"]
-        layout = state["layout"]
-        source = None
-        if res["type"] == "ball":
-            source = layout.balls_info
-        elif res["type"] == "ball_unresolved":
-            source = layout.unresolved_balls_info
-        if source is not None:
-            pos = source[res["id"]]
-
-        if element_id == "delete-ball":
-            if source is None:
+        def on_ball_select(e):
+            if state["stage"] != Stage.REVIEW or state["selected_ball"] is None:
                 return
-            del source[res["id"]]
-        else:
-            ball_id = element_id.removeprefix("select-")
-            if ball_id not in BALL_COLORS:
+            element_id = e.args["element_id"]
+            if element_id != "delete-ball" and not element_id.startswith("select-"):
                 return
-            if ball_id in layout.balls_info and not (res["type"] == "ball" and res["id"] == ball_id):
-                ui.notify(f"Ball {ball_id} already exists. Choose another ball.")
-                return
+            res, pos = state["selected_ball"]
+            layout = state["layout"]
+            source = None
+            if res["type"] == "ball":
+                source = layout.balls_info
+            elif res["type"] == "ball_unresolved":
+                source = layout.unresolved_balls_info
             if source is not None:
+                pos = source[res["id"]]
+
+            if element_id == "delete-ball":
+                if source is None:
+                    return
                 del source[res["id"]]
-            layout.balls_info[ball_id] = pos
+            else:
+                ball_id = element_id.removeprefix("select-")
+                if ball_id not in BALL_COLORS:
+                    return
+                if ball_id in layout.balls_info and not (res["type"] == "ball" and res["id"] == ball_id):
+                    ui.notify(f"Ball {ball_id} already exists. Choose another ball.")
+                    return
+                if source is not None:
+                    del source[res["id"]]
+                layout.balls_info[ball_id] = pos
 
-        layout.ball_ids = set(layout.balls_info)
-        layout.unused_ball_ids = set(BALL_COLORS) - layout.ball_ids
-        cache_balls()
-        table.set_content(render_svg(layout))
-        ball_selector.set_content("")
-        state["selected_ball"] = None
+            layout.ball_ids = set(layout.balls_info)
+            layout.unused_ball_ids = set(BALL_COLORS) - layout.ball_ids
+            cache_balls()
+            table.set_content(render_svg(layout))
+            ball_selector.set_content("")
+            state["selected_ball"] = None
 
-    def on_image_click(e):
-        if state["stage"] != "manual_pockets":
-            return
-        x, y = e.image_x, e.image_y
+        def on_image_click(e):
+            if state["stage"] != Stage.MANUAL_POCKETS:
+                return
+            x, y = e.image_x, e.image_y
 
-        def redraw_pockets():
-            svg = ""
+            for rect_id, (x1, y1, x2, y2) in list(state["pocket_rects"].items()):
+                if x1 <= x <= x2 and y1 <= y <= y2:
+                    del state["pocket_rects"][rect_id]
+                    state["pending_corner"] = None
+                    redraw_regions(captured_image, state["pocket_rects"].values(), state["pending_corner"])
+                    return
 
-            for x1, y1, x2, y2 in state["pocket_rects"].values():
-                svg += (
-                    f'<rect x="{x1}" y="{y1}" '
-                    f'width="{x2 - x1}" height="{y2 - y1}" '
-                    f'fill="none" stroke="red" stroke-width="3" '
-                    f'pointer-events="none" />'
+            if state["pending_corner"] is None:
+                state["pending_corner"] = (x, y)
+            else:
+                x1, y1 = state["pending_corner"]
+
+                state["pocket_rects"][max(state["pocket_rects"], default=-1) + 1] = (
+                    min(x1, x), min(y1, y),
+                    max(x1, x), max(y1, y)
                 )
 
-            if state["pending_corner"] is not None:
-                x, y = state["pending_corner"]
-                svg += f'<circle cx="{x}" cy="{y}" r="5" fill="yellow" pointer-events="none" />'
-
-            captured_image.set_content(svg)
-
-        for rect_id, (x1, y1, x2, y2) in list(state["pocket_rects"].items()):
-            if x1 <= x <= x2 and y1 <= y <= y2:
-                del state["pocket_rects"][rect_id]
                 state["pending_corner"] = None
-                redraw_pockets()
+
+            redraw_regions(captured_image, state["pocket_rects"].values(), state["pending_corner"])
+
+        def cache_balls():
+            state["balls_screen"].clear()
+            state["unresolved_balls_screen"].clear()
+            if state["layout"] is not None:
+                for ball_id, (x, y) in state["layout"].balls_info.items():
+                    state["balls_screen"][ball_id] = to_screen(x, y)
+
+                for ball_id, (x, y) in state["layout"].unresolved_balls_info.items():
+                    state["unresolved_balls_screen"][ball_id] = to_screen(x, y)
+
+        def update_state_value(field, value):
+            state[field] = value
+
+        def update_executor_selection(field, value):
+            if state.get("executor_selection") is None:
+                return
+            setattr(state["executor_selection"], field, value)
+            if field == "target_region_type":
+                state["executor_selection"].pending_corner = None
+                state["executor_selection"].target_region = None
+                ball_selector.set_content("")
+
+        def select():
+            if state["stage"] != Stage.SELECT:
+                return
+            layout = state["layout"]
+            if layout is None:
+                ui.notify(f"No layout selected. Choose a layout first.")
                 return
 
-        if state["pending_corner"] is None:
-            state["pending_corner"] = (x, y)
-        else:
-            x1, y1 = state["pending_corner"]
+            if state["mode"] == "Planner":
+                planner_layout = layout.to_planner_layout()
+                ui.notify("Auto-generated planner layout.")
+                state["planner_layout"] = planner_layout
+            elif state["mode"] == "Executor":
+                state["executor_selection"] = ExecutorSelection()
+                state["selection"] = EXECUTOR_SELECTION_SEQUENCE[0]
+                selection_msg.set_text("Executor selection started. Pick a target ball first.")
 
-            state["pocket_rects"][max(state["pocket_rects"], default=-1) + 1] = (
-                min(x1, x), min(y1, y),
-                max(x1, x), max(y1, y)
+        def build_executor_layout() -> ExecutorLayout | None:
+            if not state["layout"]:
+                ui.notify(f"No layout selected. Create a table layout first.")
+                return None
+            if not state["executor_selection"].is_complete():
+                ui.notify(f"Failed to build executor layout. Recreate a complete selection.")
+                return None
+            target_ball_id = state["executor_selection"].target_ball_id
+            return ExecutorLayout(
+                cue_ball_pos=state["layout"].balls_info["cue"],
+                target_ball_pos=state["layout"].balls_info[target_ball_id],
+                target_ball_id=target_ball_id,
+                target_pocket_id=state["executor_selection"].target_pocket_id,
+                target_region=state["executor_selection"].target_region,
+                route_type=state["executor_selection"].route_type,
             )
 
-            state["pending_corner"] = None
+        def execute():
+            if state["stage"] != Stage.EXECUTE:
+                return
+            if state["mode"] == "Planner":
+                ...
+            elif state["mode"] == "Executor":
+                ...
 
-        redraw_pockets()
+        state_msg = ui.label(f"Stage: {state["stage"]}")
+        selection_msg = ui.label("")
 
-    def cache_balls():
-        state["balls_screen"].clear()
-        state["unresolved_balls_screen"].clear()
-        if state["layout"] is not None:
-            for ball_id, (x, y) in state["layout"].balls_info.items():
-                state["balls_screen"][ball_id] = to_screen(x, y)
+        # captured_image = ui.interactive_image(
+        #     source=state["captured_image"],
+        #     on_mouse=on_image_click,
+        # ).classes("max-w-2xl")
 
-            for ball_id, (x, y) in state["layout"].unresolved_balls_info.items():
-                state["unresolved_balls_screen"][ball_id] = to_screen(x, y)
+        table = ui.interactive_image(
+            size=(840, 440),
+            on_mouse=on_table_click,
+        ).classes("w-full max-w-2xl")
+        ball_selector = table.add_layer()
+        ball_selector.on("svg:pointerup", on_ball_select)
 
-    state_msg = ui.label(f"Stage: {state["stage"]}")
+        @ui.refreshable
+        def render_controls():
+            global captured_image
+            global table
+            global ball_selector
+            if state["stage"] == Stage.UPLOAD:
+                captured_image = ui.interactive_image(
+                    on_mouse=on_image_click,
+                ).classes("max-w-2xl")
+            elif state["stage"] == Stage.MANUAL_POCKETS:
+                captured_image = ui.interactive_image(
+                    source=state["captured_image"],
+                    on_mouse=on_image_click,
+                ).classes("max-w-2xl")
+                ui.button("Next", on_click=lambda f: next_stage(state["stage"]))
+            elif state["stage"] == Stage.REVIEW:
+                captured_image = ui.interactive_image(
+                    source=state["captured_image"],
+                    on_mouse=on_image_click,
+                ).classes("max-w-2xl")
+                ui.button("Next", on_click=lambda f: next_stage(state["stage"], next_state_func=select))
+                ui.toggle(["Executor", "Planner"], value="Executor", on_change=lambda e: update_state_value("mode", e.value))
+            elif state["stage"] == Stage.SELECT:
+                # def set_executor_route_type(value):
+                #     state["executor_selection"]["route_type"] = value
+                ui.toggle(
+                    ["Direct", "Bank"], value="Direct",
+                    on_change=lambda e: update_executor_selection("route_type", e.value)
+                )
+            else:
+                ...
 
-    captured_image = ui.interactive_image(
-        source=state["captured_image"],
-        on_mouse=on_image_click,
-    ).classes("max-w-2xl")
-
-    table = ui.interactive_image(
-        size=(840, 440),
-        on_mouse=on_table_click,
-    ).classes("w-full max-w-2xl")
-    ball_selector = table.add_layer()
-    ball_selector.on("svg:pointerup", on_ball_select)
-
-    mode = ui.toggle(["Executor", "Planner"], value="Executor")
+        render_controls()
 
 ui.run()
