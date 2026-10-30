@@ -763,6 +763,16 @@ class ShotEvaluation:
             print(f"base_score: {self.score / (1 - self.config.robustness_weight +
                                                self.config.robustness_weight * self.route_robustness):.3f}")
             print(f"route_robustness: {self.route_robustness}")
+        return {
+            "score": self.score,
+            "position_quality": self.position_quality,
+            "breakout_quality": self.breakout_quality,
+            "target_route_quality": self.target_route_quality,
+            "cue_action_ease": self.cue_action_ease,
+            "cue_route_quality": self.cue_route_quality,
+            "target_near_miss_quality": self.target_near_miss_quality,
+            "route_robustness": self.route_robustness,
+        }
 
     @staticmethod
     def debug_eval(shot, target_id, pocket_id):

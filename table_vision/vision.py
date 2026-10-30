@@ -823,7 +823,7 @@ class TableVision:
         return TableLayout(image_state, balls_info, ball_ids, unused_ball_ids, unresolved_balls_info)
 
     def correct_ball_pos(self, mapped_balls: np.ndarray, threshold=0.1, table_length=L, table_width=W,
-                         r=R, epsilon=0.002):
+                         r=R, epsilon=0.005):
         """
         Checks ball radius against cushions and other balls;
         Corrects their positions if invalid
