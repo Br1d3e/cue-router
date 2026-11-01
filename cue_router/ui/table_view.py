@@ -153,7 +153,7 @@ def add_heatmap_target(ax, heatmap, alpha=0.8, cmap="viridis", colorbar=True, vm
     return artist
 
 
-def show_heatmap_target(heatmap, layout=None, title="CueRouter Heatmap Target", target_region_thres=0.4):
+def show_heatmap_target(heatmap, layout=None, show=True, title="CueRouter Heatmap Target", target_region_thres=0.4):
     fig, ax = create_table_axes(table_color="none")
     create_pockets(ax)
     add_heatmap_target(ax, heatmap, vmin=target_region_thres)
@@ -169,6 +169,6 @@ def show_heatmap_target(heatmap, layout=None, title="CueRouter Heatmap Target", 
         if other_balls_info:
             for ball_id, pos in other_balls_info.items():
                 create_ball(ax, table_to_plot(pos), BALL_COLORS.get(ball_id, ("white", "black")))
-
-    plt.show()
+    if show:
+        plt.show()
     return fig, ax

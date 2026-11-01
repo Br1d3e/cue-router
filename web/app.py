@@ -1,8 +1,10 @@
 import asyncio
 import inspect
 from copy import deepcopy
+from datetime import datetime
 
 import cv2
+import matplotlib.pyplot as plt
 from nicegui import run, ui, app
 import numpy as np
 from pathlib import Path
@@ -13,16 +15,19 @@ import pooltool as pt
 from pooltool.ani.constants import model_dir
 import subprocess
 
-from action import ShotAction
+from cue_router.executor.action import ShotAction
 from cue_router.core.request import SearchRequest, RouteType
-from cue_router.planner.planner_search import PlannerConfig
-from cue_router.ui.layout import ExecutorLayout
+from cue_router.planner.planner_evaluation import ShotOption
+from cue_router.planner.planner_search import PlannerConfig, PlannerSearch
+from cue_router.planner.two_ply_search import TwoPlyConfig, TwoPlyPlan, TwoPlySearch
+from cue_router.ui.layout import ExecutorLayout, PlannerLayout
 from cue_router.executor.search import SearchConfig, PolicySearch
 from cue_router.executor.shot_evaluation import ShotEvaluation
+from cue_router.ui.table_view import show_heatmap_target
 
 from table_vision.vision import TableVision, TableLayout, Detection
 from cue_router.core.table import ChineseTableSpecs
-from cue_router.core.geometry import LineSegment, Rect, PositionTarget
+from cue_router.core.geometry import HeatmapTarget, LineSegment, Rect, PositionTarget
 from web.renderer import render_frames
 
 MODEL_PATH = Path(__file__).parent.parent / "table_vision" / "models" / "yolo_3.pt"
@@ -106,6 +111,14 @@ class CachedShot:
     output_dir: Path | str = None
     video_path: Path | str = None
 
+@dataclass
+class CachedPlan:
+    id: int
+    plan: ShotOption
+    output_dir: Path | str = None
+    image_path: Path | str = None
+    video_path: Path | str = None
+
 SEARCH_CONFIG = SearchConfig(
     display_k=5,
     search_k=10,
@@ -123,6 +136,12 @@ SEARCH_CONFIG = SearchConfig(
 PLANNER_CONFIG = PlannerConfig(
     display_k=5,
 )
+
+TWO_PLY_CONFIG = TwoPlyConfig(
+    planner_top_k=5,
+)
+
+TWO_PLY = True
 
 
 def to_screen(x, y):
@@ -318,6 +337,26 @@ def render_video(output_dir):
     )
     return output_dir / "shot.mp4"
 
+def render_plan_video(shot: pt.System, output_dir: Path):
+    render_frames(shot, output_dir=output_dir)
+    return render_video(output_dir)
+
+def create_shot(layout: PlannerLayout | ExecutorLayout):
+    cue = pt.Cue(cue_ball_id="cue")
+    chinese_table = ChineseTableSpecs.chinese_table
+    shot = pt.System(table=chinese_table, balls=layout.get_balls(), cue=cue)
+    shot.set_ballset(ChineseTableSpecs.ball_set)
+    return shot
+
+def two_ply_planner_search(layout: PlannerLayout, legal_target_balls: list[str]):
+    two_ply_planner = TwoPlySearch(PLANNER_CONFIG, TWO_PLY_CONFIG)
+    shot = create_shot(layout)
+    return two_ply_planner.search(
+        shot,
+        layout,
+        legal_target_balls
+    )
+
 @ui.page("/")
 def page():
     ui.page_title("CueRouter Demo")
@@ -336,7 +375,20 @@ def page():
         "selected_ball": None,
         "finish_manual_label": None,
         "cached_shots": {},
+        "legal_target_balls": [str(i) for i in range(1, 8)],
+        "cached_plans": {},
     }
+
+    def reset():
+        for name in ("captured_image", "layout", "mode", "selection", "pending_corner", "selected_ball", "finish_manual_label"):
+            state[name] = None
+        for name in ("balls_screen", "unresolved_balls_screen", "pocket_rects", "cached_shots", "cached_plans"):
+            state[name] = {}
+        state["stage"] = Stage.UPLOAD
+        state_msg.set_text(f"Stage: {state["stage"]}")
+        caption_msg.set_text("")
+        table.set_content("")
+        render_controls.refresh()
 
     async def next_stage(stage: Stage, next_state_func=None):
         stage = deepcopy(stage)
@@ -344,9 +396,13 @@ def page():
             stage = Stage.REVIEW
         elif stage == Stage.REVIEW:
             if "cue" not in state["balls_screen"].keys():
-                ui.notify("[⚠ Warning] No cue ball selected.")
+                ui.notify("[⚠ Warning] No cue ball selected. Designate a cue ball to continue.")
+                return
             state["unresolved_balls_screen"] = None
+            # for ball_id, pos in state["layout"].unresolved_balls_info.items():
+            #     state["layout"].balls_info["ball_id"] = pos
             state["layout"].unresolved_balls_info.clear()
+            table.set_content(render_svg(state["layout"]))
             stage = Stage.SELECT
         elif stage == Stage.SELECT:
             if state["mode"] == "Executor":
@@ -370,25 +426,43 @@ def page():
 
         return stage
 
-    def next_selection(selection):
-        # i = EXECUTOR_SELECTION_SEQUENCE.index(selection)
-        # if i == len(EXECUTOR_SELECTION_SEQUENCE) - 1:
-        #     selection = None
-        # else:
-        #     selection = EXECUTOR_SELECTION_SEQUENCE[i + 1]
+    async def prev_stage(stage: Stage):
+        if stage in [Stage.MANUAL_POCKETS, Stage.REVIEW]:
+            stage = stage.UPLOAD
+        elif stage == Stage.SELECT:
+            stage = stage.REVIEW
+        elif stage in [Stage.EXECUTE, Stage.DONE]:
+            stage = Stage.SELECT
+        state["stage"] = stage
+        state_msg.set_text(f"Stage: {stage}")
 
+        await render_controls.refresh()
+
+        return stage
+
+    def next_selection(selection):
         if selection == "target_ball":
             selection = "pocket"
             caption_msg.set_text("Select a target pocket.")
         elif selection == "pocket":
             selection = "target_region"
             caption_msg.set_text("Choose a target region type first. Then click the opposite corners of the region.")
-        # elif selection == "target_region":
-        #     ...
 
         state["selection"] = selection
         render_controls.refresh()
 
+        return selection
+
+    def prev_selection(selection):
+        if selection == "pocket":
+            selection = "target_ball"
+            caption_msg.set_text(f"Select a target ball to continue.")
+        elif selection == "target_region":
+            selection = "pocket"
+            caption_msg.set_text("Select a target pocket.")
+
+        state["selection"] = selection
+        render_controls.refresh()
         return selection
 
     async def on_upload(e):
@@ -629,6 +703,7 @@ def page():
             planner_layout = layout.to_planner_layout()
             ui.notify("Auto-generated planner layout.")
             state["planner_layout"] = planner_layout
+            caption_msg.set_text("Pick a color (solids / stripes).")
         elif state["mode"] == "Executor":
             state["executor_selection"] = ExecutorSelection()
             state["selection"] = EXECUTOR_SELECTION_SEQUENCE[0]
@@ -661,7 +736,27 @@ def page():
             return
         caption_msg.set_visibility(False)
         if state["mode"] == "Planner":
-            ...
+            if state["planner_layout"] is None:
+                ui.notify("No planner layout selected. Create a layout first.")
+                return
+            if TWO_PLY:
+                caption_msg.set_visibility(True)
+                caption_msg.set_text("Two-ply searching...")
+                plans = await run.cpu_bound(
+                    two_ply_planner_search,
+                    state["planner_layout"], state["legal_target_balls"]
+                )
+            else:
+                planner = PlannerSearch(PLANNER_CONFIG)
+                caption_msg.set_visibility(True)
+                caption_msg.set_text("Searching...")
+                plans = planner.search(state["planner_layout"], state["legal_target_balls"])
+
+            caption_msg.set_text("Search complete.")
+            state["plans"] = plans
+            state["cached_plans"].clear()
+
+            await next_stage(state["stage"])
         elif state["mode"] == "Executor":
             if state["executor_layout"] is None:
                 ui.notify("No executor layout selected. Select a layout first.")
@@ -680,38 +775,6 @@ def page():
             state["scores"] = scores
             state["policies"] = policies
 
-            # test only
-            # best_score = scores[0]
-            # best_policy = policies[0].as_array()
-            # ui.notify(f"Best score: {best_score:.3f}. Policy: {best_policy}")
-            #
-            # phi, V0, a, b = best_policy
-            # state["cue_action"] = best_policy
-            # cue = pt.Cue(cue_ball_id="cue")
-            # chinese_table = ChineseTableSpecs.chinese_table
-            # shot = pt.System(table=chinese_table, balls=state["executor_layout"].get_balls(), cue=cue)
-            # shot.set_ballset(ChineseTableSpecs.ball_set)
-            # shot.cue.set_state(V0=V0, phi=phi, a=a, b=b)
-            #
-            # shot_evaluator = ShotEvaluation()
-            # score = shot_evaluator.evaluate_shot_final(
-            #     shot,
-            #     search_request.target_ball_id,
-            #     search_request.target_pocket_id,
-            #     search_request.position_target,
-            #     route_type=search_request.route_type
-            # )
-            # ui.label(shot_evaluator.print_score_breakdown())
-            #
-            # pt.simulate(shot, inplace=True)
-            # # pt.show(shot)
-            # output_dir = render_frames(shot)
-            # # ui.notify("Generated frames.")
-            # state["video_path"] = await run.io_bound(
-            #     render_video,
-            #     output_dir,
-            # )
-            # ui.notify("Rendered video.")
             await next_stage(state["stage"])
 
     def draw_cue_impact_diagram(content, label, a: float, b: float):
@@ -764,6 +827,7 @@ def page():
 
     table = ui.interactive_image(
         size=(840, 440),
+        # content=render_svg(state["layout"]),
         on_mouse=on_table_click,
     ).classes("w-full max-w-2xl")
     ball_selector = table.add_layer()
@@ -785,27 +849,42 @@ def page():
             ).classes("max-w-2xl")
             redraw_regions(captured_image, state["pocket_rects"].values(), state["pending_corner"])
             ui.button("Finish manual label", on_click=state["finish_manual_label"])
+            ui.button("Back", on_click=lambda: prev_stage(state["stage"]))
         elif state["stage"] == Stage.REVIEW:
             captured_image = ui.interactive_image(
                 source=state["captured_image"],
                 on_mouse=on_image_click,
             ).classes("max-w-2xl")
-            ui.button("Next", on_click=lambda f: next_stage(state["stage"], next_state_func=select))
+            ui.label("Choose a CueRouter mode:")
             ui.toggle(["Executor", "Planner"], value="Executor",
                       on_change=lambda e: update_state_value("mode", e.value))
+            ui.button("Next", on_click=lambda f: next_stage(state["stage"], next_state_func=select))
+            ui.button("Back", on_click=lambda: prev_stage(state["stage"]))
         elif state["stage"] == Stage.SELECT and state["mode"] == "Executor":
             ui.toggle(
                 {"direct": "Direct", "bank": "Bank"}, value=state["executor_selection"].route_type,
                 on_change=lambda e: update_executor_selection("route_type", e.value)
             )
+            ui.button("Prev selection", on_click=lambda: prev_selection(state["selection"]))
             if state["selection"] == "target_region":
                 ui.button("Line Segment", on_click=lambda: update_executor_selection("target_region_type", LineSegment))
                 ui.button("Rectangle", on_click=lambda: update_executor_selection("target_region_type", Rect))
                 if state["executor_selection"].is_complete():
                     ui.button("Next", on_click=lambda: next_stage(state["stage"], next_state_func=execute))
+            ui.button("Back", on_click=lambda: prev_stage(state["stage"]))
         elif state["stage"] == Stage.SELECT and state["mode"] == "Planner":
-            ...
+            ball_color_map = {
+                "Solids": [str(i) for i in range(1, 8)],
+                "Stripes": [str(i) for i in range(9, 16)],
+            }
+            ui.toggle(
+                ["Solids", "Stripes"], value="Solids",
+                on_change=lambda e: update_state_value("legal_target_balls", ball_color_map[e.value])
+            )
+            ui.button("Next", on_click=lambda: next_stage(state["stage"], next_state_func=execute))
+            ui.button("Back", on_click=lambda: prev_stage(state["stage"]))
         elif state["stage"] == Stage.DONE:
+            ui.button("Back", on_click=lambda: prev_stage(state["stage"]))
             if state["mode"] == "Executor":
                 if state["scores"] is None or state["policies"] is None:
                     ui.notify("Failed to fetch search results.")
@@ -838,10 +917,7 @@ def page():
                         policy = state["policies"][idx - 1]
 
                         phi, V0, a, b = policy.as_array()
-                        cue = pt.Cue(cue_ball_id="cue")
-                        chinese_table = ChineseTableSpecs.chinese_table
-                        shot = pt.System(table=chinese_table, balls=state["executor_layout"].get_balls(), cue=cue)
-                        shot.set_ballset(ChineseTableSpecs.ball_set)
+                        shot = create_shot(state["executor_layout"])
                         shot.cue.set_state(V0=V0, phi=phi, a=a, b=b)
 
                         shot_evaluator = ShotEvaluation()
@@ -884,7 +960,96 @@ def page():
 
                 ui.timer(0.1, lambda: render_shot_video(1), once=True)
             else:
-                ...
+                if state.get("plans") is None:
+                    ui.notify("Unable to search for a plan.")
+                    return
+                if len(state["plans"]) == 0:
+                    ui.notify("Unable to find a plan.")
+                    return
+                ui.label(f"Click to view a shot option (Ranked by score, #1~#{len(state["plans"])}).")
+                plan_toggle = ui.toggle([f"#{i + 1}" for i in range(len(state["plans"]))], value="#1",
+                                        on_change=lambda e: display_shot_plan(e.value))
+
+                plan_label = ui.label()
+                score_label = ui.label()
+                score_breakdown_desc = ui.label().classes("whitespace-pre-line")
+                heatmap_label = ui.label()
+                position_map = ui.image().classes("w-full max-w-2xl")
+                preview = ui.video(src=None, autoplay=True, loop=True, controls=True).classes("w-full max-w-2xl")
+                cue_impact_diagram = ui.html()
+                impact_label = ui.label()
+                cue_speed_diagram = ui.interactive_image(size=(508, 108))
+                speed_label = ui.label()
+
+                async def display_shot_plan(idx: int | str):
+                    if isinstance(idx, str):
+                        idx = int(idx[1:])
+                    if idx < 1 or idx > len(state["plans"]):
+                        raise ValueError(f"Invalid shot index: {idx}. len(state['plans']) = {len(state['plans'])}")
+                    if not plan_toggle.enabled:
+                        return
+                    plan_toggle.disable()
+                    try:
+                        ui.notify(f"Preparing plan #{idx}.")
+                        result = state["plans"][idx - 1]
+                        two_ply = isinstance(result, TwoPlyPlan)
+                        plan = result.option if two_ply else result
+                        plan_label.set_text(
+                            f"Target ball: {plan.target_ball_id}. Target pocket: {plan.target_pocket_id} "
+                            f"({plan.route_type}). Objective: {getattr(plan.objective, 'value', plan.objective)}"
+                        )
+                        score_label.set_text(
+                            f"Combined: {result.combined_score:.3f} | Planner: {result.planner_score:.3f} | "
+                            f"Execution: {result.execution_score:.3f} | Two-ply: {result.two_ply_value:.3f}"
+                            if two_ply else f"Score: {plan.score:.3f}"
+                        )
+                        score_breakdown_desc.set_text("\n".join(
+                            f"{name}: {value}" for name, value in plan.score_breakdown.items()
+                        ))
+                        for element in (preview, cue_impact_diagram, impact_label, cue_speed_diagram, speed_label):
+                            element.set_visibility(False)
+
+                        cached_plan = state["cached_plans"].get(idx)
+                        if cached_plan is None:
+                            output_dir = Path(__file__).parent / "heatmaps" / f"{datetime.now():%Y%m%d_%H%M%S_%f}-plan-{idx}"
+                            output_dir.mkdir(parents=True, exist_ok=True)
+                            image_path = None
+                            if isinstance(plan.position_target, HeatmapTarget):
+                                fig, ax = show_heatmap_target(plan.position_target, layout=state["planner_layout"], show=False)
+                                # Match the web table and top-down camera: +y right, +x down.
+                                ax.invert_xaxis()
+                                ax.invert_yaxis()
+                                image_path = output_dir / "heatmap.png"
+                                try:
+                                    fig.savefig(image_path)
+                                finally:
+                                    plt.close(fig)
+                            cached_plan = CachedPlan(id=idx, plan=plan, output_dir=output_dir, image_path=image_path)
+                            state["cached_plans"][idx] = cached_plan
+
+                        position_map.set_visibility(cached_plan.image_path is not None)
+                        heatmap_label.set_text("Position heatmap" if cached_plan.image_path else "No position heatmap for this option.")
+                        if cached_plan.image_path is not None:
+                            position_map.set_source(cached_plan.image_path)
+
+                        if two_ply:
+                            if cached_plan.video_path is None:
+                                cached_plan.video_path = await run.cpu_bound(
+                                    render_plan_video, result.simulated_shot.copy(), cached_plan.output_dir,
+                                )
+                            preview.set_source(cached_plan.video_path)
+                            phi, V0, a, b = result.policy.as_array()
+                            draw_cue_impact_diagram(cue_impact_diagram, impact_label, a, b)
+                            draw_cue_speed_diagram(cue_speed_diagram, speed_label, V0)
+                            for element in (preview, cue_impact_diagram, impact_label, cue_speed_diagram, speed_label):
+                                element.set_visibility(True)
+                        ui.notify(f"Displayed plan #{idx}.")
+                    finally:
+                        plan_toggle.enable()
+
+                ui.timer(0.05, lambda: display_shot_plan(plan_toggle.value), once=True)
+
+            ui.button("Run again", on_click=reset)
 
     render_controls()
 
