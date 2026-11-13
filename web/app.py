@@ -141,7 +141,7 @@ TWO_PLY_CONFIG = TwoPlyConfig(
     planner_top_k=5,
 )
 
-TWO_PLY = True
+TWO_PLY = False
 
 
 def to_screen(x, y):
@@ -377,6 +377,7 @@ def page():
         "cached_shots": {},
         "legal_target_balls": [str(i) for i in range(1, 8)],
         "cached_plans": {},
+        "is_two_ply": TWO_PLY,
     }
 
     def reset():
@@ -405,6 +406,7 @@ def page():
             table.set_content(render_svg(state["layout"]))
             stage = Stage.SELECT
         elif stage == Stage.SELECT:
+            ball_selector.set_content("")
             if state["mode"] == "Executor":
                 state["executor_layout"] = build_executor_layout()
                 if state["executor_layout"] is None:
@@ -429,7 +431,10 @@ def page():
     async def prev_stage(stage: Stage):
         if stage in [Stage.MANUAL_POCKETS, Stage.REVIEW]:
             stage = stage.UPLOAD
+            ball_selector.set_content("")
+            table.set_content("")
         elif stage == Stage.SELECT:
+            state["mode"] = "Executor"
             stage = stage.REVIEW
         elif stage in [Stage.EXECUTE, Stage.DONE]:
             stage = Stage.SELECT
@@ -739,7 +744,7 @@ def page():
             if state["planner_layout"] is None:
                 ui.notify("No planner layout selected. Create a layout first.")
                 return
-            if TWO_PLY:
+            if state["is_two_ply"]:
                 caption_msg.set_visibility(True)
                 caption_msg.set_text("Two-ply searching...")
                 plans = await run.cpu_bound(
@@ -750,7 +755,11 @@ def page():
                 planner = PlannerSearch(PLANNER_CONFIG)
                 caption_msg.set_visibility(True)
                 caption_msg.set_text("Searching...")
-                plans = planner.search(state["planner_layout"], state["legal_target_balls"])
+                # plans = planner.search(state["planner_layout"], state["legal_target_balls"])
+                plans = await run.cpu_bound(
+                    planner.search,
+                    state["planner_layout"], state["legal_target_balls"],
+                )
 
             caption_msg.set_text("Search complete.")
             state["plans"] = plans
@@ -1011,12 +1020,11 @@ def page():
 
                         cached_plan = state["cached_plans"].get(idx)
                         if cached_plan is None:
-                            output_dir = Path(__file__).parent / "heatmaps" / f"{datetime.now():%Y%m%d_%H%M%S_%f}-plan-{idx}"
+                            output_dir = Path(__file__).parent / "frames" / f"{datetime.now():%Y%m%d_%H%M%S_%f}-plan-{idx}"
                             output_dir.mkdir(parents=True, exist_ok=True)
                             image_path = None
                             if isinstance(plan.position_target, HeatmapTarget):
-                                fig, ax = show_heatmap_target(plan.position_target, layout=state["planner_layout"], show=False)
-                                # Match the web table and top-down camera: +y right, +x down.
+                                fig, ax = show_heatmap_target(plan.position_target, layout=state["planner_layout"], show=False, target_region_thres=0.0)
                                 ax.invert_xaxis()
                                 ax.invert_yaxis()
                                 image_path = output_dir / "heatmap.png"
@@ -1032,17 +1040,36 @@ def page():
                         if cached_plan.image_path is not None:
                             position_map.set_source(cached_plan.image_path)
 
-                        if two_ply:
-                            if cached_plan.video_path is None:
-                                cached_plan.video_path = await run.cpu_bound(
-                                    render_plan_video, result.simulated_shot.copy(), cached_plan.output_dir,
+                        if cached_plan.video_path is None:
+                            if two_ply:
+                                shot = result.simulated_shot.copy()
+                                phi, V0, a, b = result.policy.as_array()
+                            else:
+                                shot = create_shot(state["planner_layout"])
+                                ui.notify(f"Searching execution policy for shot #{idx}...")
+                                _, policies = await run.cpu_bound(
+                                    executor_search,
+                                    result.to_search_request(shot),
                                 )
-                            preview.set_source(cached_plan.video_path)
-                            phi, V0, a, b = result.policy.as_array()
-                            draw_cue_impact_diagram(cue_impact_diagram, impact_label, a, b)
-                            draw_cue_speed_diagram(cue_speed_diagram, speed_label, V0)
-                            for element in (preview, cue_impact_diagram, impact_label, cue_speed_diagram, speed_label):
-                                element.set_visibility(True)
+                                if len(policies) == 0:
+                                    ui.notify("No executable policies found.")
+                                    return
+                                best_policy = policies[0]
+                                phi, V0, a, b = best_policy.as_array()
+                                shot.cue.set_state(V0=V0, phi=phi, a=a, b=b)
+                                shot = await run.cpu_bound(
+                                    pt.simulate,
+                                    shot
+                                )
+
+                            cached_plan.video_path = await run.cpu_bound(
+                                render_plan_video, shot, cached_plan.output_dir,
+                            )
+                        preview.set_source(cached_plan.video_path)
+                        draw_cue_impact_diagram(cue_impact_diagram, impact_label, a, b)
+                        draw_cue_speed_diagram(cue_speed_diagram, speed_label, V0)
+                        for element in (preview, cue_impact_diagram, impact_label, cue_speed_diagram, speed_label):
+                            element.set_visibility(True)
                         ui.notify(f"Displayed plan #{idx}.")
                     finally:
                         plan_toggle.enable()

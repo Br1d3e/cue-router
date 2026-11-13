@@ -137,11 +137,7 @@ class PlannerEvaluation:
         target_xy = cls._xy(target_ball_pos)
         pocket_xy = cls._aim_pocket_xy(target_pocket_id)
 
-        if not ChineseTableSpecs.in_table(cue_xy) or not ChineseTableSpecs.in_table(target_xy):
-            return 0.0
-        if not cls.has_line_of_sight(cue_xy, target_xy, obstacles, exclude=(cue_xy, target_xy)):
-            return 0.0
-        if not cls.has_line_of_sight(target_xy, pocket_xy, obstacles, exclude=(cue_xy, target_xy)):
+        if not cls._direct_pot_feasible_grid(cue_xy[0], cue_xy[1], target_xy, pocket_xy, obstacles):
             return 0.0
 
         cue_to_object = target_xy - cue_xy
@@ -307,28 +303,8 @@ class PlannerEvaluation:
         cos_alpha = np.maximum(cos_alpha, 0.0)
         alpha_deg = np.degrees(np.arccos(np.clip(cos_alpha, -1.0, 1.0)))
 
-        cue_target_visible = cls.has_line_of_sight_grid(
-            cue_X,
-            cue_Y,
-            target_xy,
-            obstacles,
-            fixed_exclude=(target_xy,),
-            grid_exclude=((cue_X, cue_Y),),
-        )
-        target_pocket_visible = cls.has_line_of_sight_grid(
-            np.full_like(cue_X, target_xy[0], dtype=float),
-            np.full_like(cue_Y, target_xy[1], dtype=float),
-            pocket_xy,
-            obstacles,
-            fixed_exclude=(target_xy,),
-            grid_exclude=((cue_X, cue_Y),),
-        )
-
         valid = (
-            ChineseTableSpecs.in_table_mask(cue_X, cue_Y)
-            & cue_target_visible
-            & target_pocket_visible
-            & (v_co != 0)
+            cls._direct_pot_feasible_grid(cue_X, cue_Y, target_xy, pocket_xy, obstacles)
             & (alpha_deg < cls.ALPHA_HARD_CUTOFF_DEG)
         )
         if not np.any(valid):
@@ -361,6 +337,47 @@ class PlannerEvaluation:
             + (1 - cls.MIN_PLAYABLE_QUALITY) * pot_quality[positive]
         )
         return np.clip(scores, 0.0, 1.0)
+
+    @classmethod
+    def _direct_pot_feasible_grid(cls, cue_X, cue_Y, target_xy, pocket_xy, obstacles):
+        """Necessary straight-line contact checks; obstacles are object balls, not the cue."""
+        cue_X, cue_Y = np.asarray(cue_X, dtype=float), np.asarray(cue_Y, dtype=float)
+        pot_vector = pocket_xy - target_xy
+        pot_length = np.linalg.norm(pot_vector)
+        valid = ChineseTableSpecs.in_table_mask(cue_X, cue_Y)
+        if pot_length == 0 or not ChineseTableSpecs.in_table(target_xy):
+            return np.zeros_like(valid)
+
+        pot_dir = pot_vector / pot_length
+        ghost = target_xy - cls.BALL_CLEARANCE * pot_dir
+        if not ChineseTableSpecs.in_table(ghost):
+            return np.zeros_like(valid)
+
+        approach_x, approach_y = ghost[0] - cue_X, ghost[1] - cue_Y
+        approach_sq = approach_x ** 2 + approach_y ** 2
+        clearance_sq = cls.BALL_CLEARANCE ** 2
+        valid &= (cue_X - target_xy[0]) ** 2 + (cue_Y - target_xy[1]) ** 2 >= clearance_sq
+        # The ghost point must be the first contact, not the exit of a path through the object.
+        valid &= approach_x * pot_dir[0] + approach_y * pot_dir[1] > 0
+
+        for obstacle in cls._obstacle_positions(obstacles):
+            if np.linalg.norm(obstacle - target_xy) < 1e-9:
+                continue
+            projection = (obstacle[0] - cue_X) * approach_x + (obstacle[1] - cue_Y) * approach_y
+            t = np.clip(np.divide(
+                projection, approach_sq, out=np.zeros_like(approach_sq), where=approach_sq > 0,
+            ), 0.0, 1.0)
+            distance_sq = (
+                (obstacle[0] - cue_X - t * approach_x) ** 2
+                + (obstacle[1] - cue_Y - t * approach_y) ** 2
+            )
+            valid &= distance_sq >= clearance_sq
+
+            # Closed segments include overlap at the cue, ghost, object, and pocket endpoints.
+            t = np.clip(np.dot(obstacle - target_xy, pot_vector) / pot_length ** 2, 0.0, 1.0)
+            if np.linalg.norm(obstacle - (target_xy + t * pot_vector)) < cls.BALL_CLEARANCE:
+                return np.zeros_like(valid)
+        return valid
 
     @classmethod
     def _cut_angle_quality(cls, alpha_deg):

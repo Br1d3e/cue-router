@@ -1,9 +1,11 @@
+from copy import deepcopy
 from dataclasses import dataclass
 
 import numpy as np
 
 from cue_router.core.table import ChineseTableSpecs
 from cue_router.planner.breakout_planner import BreakoutPlanner
+from cue_router.planner.landing_simulation import LandingSimulator
 from cue_router.planner.planner_evaluation import PlannerEvaluation, ShotOption
 from cue_router.planner.position_value_map import ContinuationOption, PositionValueMap
 from cue_router.planner.problem_ball_profile import ProblemBallAnalyzer
@@ -49,6 +51,8 @@ class PlannerConfig:
     continuity_heatmap_bonus_weight: float = 0.5
     continuity_min_factor: float = 0.85
     continuity_max_factor: float = 1.40
+    cue_landing_tolerance: float = 0.15
+    landing_support_floor: float = 0.25
 
 
 @dataclass(frozen=True)
@@ -137,6 +141,14 @@ class PlannerSearch:
                     context=context,
                 )
                 if option is not None:
+                    option = self._reevaluate_shot_option(
+                        option=option,
+                        balls=balls,
+                        position_map=value_map,
+                        legal_targets=legal_targets,
+                        context=context,
+                        cue_xy=cue_xy
+                    )
                     options.append(option)
                     options.extend(BreakoutPlanner.build_breakout_position_options(
                         cue_xy,
@@ -149,17 +161,17 @@ class PlannerSearch:
                         self.config,
                         table_simplification_factors=table_simplification_factors,
                     ))
-                else:
-                    options.extend(self._build_bank_shot_options(
-                        cue_xy,
-                        balls,
-                        legal_targets,
-                        target_ball_id,
-                        target_pocket_id,
-                        value_map=value_map,
-                        problem_profile=self.problem_profiles.get(target_ball_id),
-                        context=context,
-                    ))
+                # else:
+                options.extend(self._build_bank_shot_options(
+                    cue_xy,
+                    balls,
+                    legal_targets,
+                    target_ball_id,
+                    target_pocket_id,
+                    value_map=value_map,
+                    problem_profile=self.problem_profiles.get(target_ball_id),
+                    context=context,
+                ))
 
         k = self.config.display_k if display_k is None else display_k
         return sorted(options, key=lambda option: option.score, reverse=True)[:k]
@@ -238,6 +250,63 @@ class PlannerSearch:
                 "is_problem_ball": False if problem_profile is None else problem_profile.is_hard,
                 "require_breakout": False if problem_profile is None else problem_profile.require_breakout,
                 "problem_reasons": () if problem_profile is None else problem_profile.reasons,
+            },
+        )
+
+    def _reevaluate_shot_option(self, option: ShotOption, balls, position_map, legal_targets, context, cue_xy):
+        if not position_map.candidates:
+            return option  # Terminal position: there is no continuation to condition.
+        option = deepcopy(option)
+
+        landing_map = self._build_landing_support_map(option, balls, cue_xy)
+        combined_map = self._combine_value_maps(position_map, landing_map, eps=self.config.landing_support_floor)
+
+        target_region, future_position_value, intended_next_shot = combined_map.select_best_target_heatmap(
+            threshold=self.config.target_region_threshold,
+            top_k=self.config.target_heatmap_k,
+            top_fraction=self.config.top_heatmap_percent,
+            preferred_options=self._context_intended_next_shots(context),
+            preferred_weight=self._context_heatmap_bonus_weight(context),
+        )
+
+        current_pot_quality = option.score_breakdown["current_pot_quality"]
+        base_score = current_pot_quality * future_position_value * self.config.normal_position_weight
+
+        table_simplification_factor = self._table_simplification_factor(
+            option.target_ball_id,
+            legal_targets,
+            self.problem_profiles,
+        )
+        continuity_factor = self._continuity_factor(
+            option.target_ball_id,
+            option.target_pocket_id,
+            option.route_type,
+            None,
+            context,
+        )
+
+        score = base_score * table_simplification_factor * continuity_factor
+        intended_next_shot_label = None
+        if len(intended_next_shot) > 0:
+            intended_next_shot_label = ", ".join(option.label() for option in intended_next_shot)
+
+        return ShotOption(
+            target_ball_id=option.target_ball_id,
+            target_pocket_id=option.target_pocket_id,
+            target_region=target_region,
+            score=score,
+            route_type=option.route_type,
+            option_family=option.option_family,
+            score_breakdown=option.score_breakdown | {
+                "option_family": "normal_position",
+                "current_pot_quality": current_pot_quality,
+                "future_position_value": future_position_value,
+                "target_region_value": future_position_value,
+                "table_simplification_factor": table_simplification_factor,
+                "continuity_factor": continuity_factor,
+                "base_score": base_score,
+                "intended_next_shot": intended_next_shot_label,
+                "intended_next_shots": intended_next_shot,
             },
         )
 
@@ -425,6 +494,37 @@ class PlannerSearch:
             top_fraction=self.config.top_heatmap_percent,
         )
 
+    def _build_landing_support_map(self, option: ShotOption, balls, cue_xy) -> PositionValueMap:
+        return PositionValueMap.from_grid_evaluator(
+            self._cue_landing_position_value_vectorized,
+            cue_xy=cue_xy,
+            balls=balls,
+            option=option,
+            candidates=(),
+            target_ball_pos=balls[option.target_ball_id],
+            target_pocket_id=option.target_pocket_id,
+            m=self.config.grid_m,
+            n=self.config.grid_n,
+            pocket_mask_radius=self.config.pocket_mask_radius,
+            top_fraction=self.config.top_heatmap_percent,
+        )
+
+    def _combine_value_maps(self, position_map: PositionValueMap, landing_map: PositionValueMap, eps=0.25) -> PositionValueMap:
+        position_grid = position_map.value_grid
+        landing_grid = landing_map.value_grid
+        if landing_grid.shape != (1, *position_grid.shape[1:]):
+            raise ValueError(f"Expected one support grid aligned with {position_grid.shape}, got {landing_grid.shape}")
+        combined_grid = position_grid * (eps + (1 - eps) * landing_grid)
+        return PositionValueMap(
+            combined_grid,
+            candidates=PositionValueMap._score_candidates(
+                position_map.candidates, combined_grid, self.config.top_heatmap_percent,
+            ),
+            table_width=position_map.table_width,
+            table_length=position_map.table_length,
+            pocket_mask_radius=position_map.pocket_mask_radius,
+        )
+
     def _terminal_value_map(self):
         return PositionValueMap.terminal(
             m=self.config.grid_m,
@@ -440,6 +540,7 @@ class PlannerSearch:
             target_pocket_id,
             candidates=(),
             obstacles=None,
+            **kwargs,
     ):
         balls = obstacles["balls"]
         legal_targets = obstacles["legal_targets"]
@@ -496,6 +597,28 @@ class PlannerSearch:
             0.0,
         )
         return value_grid
+
+    def _cue_landing_position_value_vectorized(self, cue_X, cue_Y, *, option=None, balls=None, R=None, cue_xy=None,
+                                               **kwargs):
+        if R is None:
+            R = self.config.cue_landing_tolerance
+        landings = LandingSimulator.simulate(option, {**balls, "cue": cue_xy})
+
+        if len(landings) == 0:
+            return np.zeros_like(cue_X, dtype=float)
+
+        # cue_X: [M, N]
+        # cue_Y: [M, N]
+        # landings: [S, 2]
+        # distance_sq: [S, M, N]
+        distance_sq = (
+            (cue_X[None, :, :] - landings[:, 0, None, None]) ** 2
+            + (cue_Y[None, :, :] - landings[:, 1, None, None]) ** 2
+        )
+
+        maps = np.exp(-np.log(2) * distance_sq / R**2)
+        return np.max(maps, axis=0)
+
 
     def _cue_target_distance_quality_grid(self, cue_X, cue_Y, target_ball_pos):
         if target_ball_pos is None:

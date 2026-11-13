@@ -19,8 +19,8 @@ from cue_router.planner.two_ply_search import TwoPlyConfig, TwoPlySearch
 from table_vision.vision import TableVision
 
 chinese_table = ChineseTableSpecs.chinese_table
-MODE = "executor"
-VISUAL_SELECTOR = "vision"
+MODE = "planner"
+VISUAL_SELECTOR = "manual"
 
 PLANNER_CONFIG = PlannerConfig(
     display_k=5,

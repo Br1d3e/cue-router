@@ -105,6 +105,9 @@ class PositionValueMap:
             target_ball_pos,
             target_pocket_id,
             obstacles=None,
+            balls=None,
+            option=None,
+            cue_xy=None,
             m=100,
             n=50,
             pocket_mask_radius=1.5 * ChineseTableSpecs.BALL_RADIUS,
@@ -113,14 +116,18 @@ class PositionValueMap:
         heatmap = HeatmapTarget(np.zeros((m, n), dtype=float), pocket_mask_radius=pocket_mask_radius)
         cue_X, cue_Y = np.meshgrid(heatmap.x_coords, heatmap.y_coords)
         valid_mask = heatmap.valid_position_mask(cue_X, cue_Y)
-        candidates = tuple(candidates)
+        if candidates is not None:
+            candidates = tuple(candidates)
         value_grid = evaluator(
-            cue_X,
-            cue_Y,
-            target_ball_pos,
-            target_pocket_id,
+            cue_X=cue_X,
+            cue_Y=cue_Y,
+            balls=balls,
+            option=option,
+            target_ball_pos=target_ball_pos,
+            target_pocket_id=target_pocket_id,
             candidates=candidates,
             obstacles=obstacles,
+            cue_xy=cue_xy,
         )
         value_grid = np.clip(np.where(valid_mask[np.newaxis, :, :], value_grid, 0.0), 0.0, 1.0)
         candidates = cls._score_candidates(candidates, value_grid, top_fraction)
