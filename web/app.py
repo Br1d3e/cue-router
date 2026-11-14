@@ -1,5 +1,7 @@
 import asyncio
+import base64
 import inspect
+import json
 from copy import deepcopy
 from datetime import datetime
 
@@ -158,6 +160,27 @@ def in_table(x, y, allow_margin=False):
     return M <= x <= M + PLAY_WIDTH and M <= y <= M + PLAY_HEIGHT
 
 
+def place_review_ball(layout, ball_id, position, source=None):
+    """Commit an Add/Move only when its exact identity and position are valid."""
+    if ball_id not in BALL_COLORS:
+        raise ValueError("Choose a ball identity.")
+    x, y = position
+    if not (R < x < W - R and R < y < L - R):
+        raise ValueError("Place the ball inside the cushions.")
+    for field in ("balls_info", "unresolved_balls_info"):
+        for other_id, other_pos in getattr(layout, field).items():
+            if source == (field, other_id):
+                continue
+            if other_id == ball_id:
+                raise ValueError(f"Ball {ball_id} already exists.")
+            if np.linalg.norm(np.asarray(position) - other_pos) < 2 * R:
+                raise ValueError(f"Position overlaps ball {other_id}.")
+    field = source[0] if source else "balls_info"
+    getattr(layout, field)[ball_id] = (float(x), float(y))
+    layout.ball_ids = set(layout.balls_info)
+    layout.unused_ball_ids = set(BALL_COLORS) - layout.ball_ids
+
+
 def render_svg(layout: TableLayout):
     parts = [
         f'<rect width="{2 * M + PLAY_WIDTH}" height="{2 * M + PLAY_HEIGHT}" rx="15" fill="#674630"/>',
@@ -256,44 +279,6 @@ def redraw_regions(content, regions, pending_corner=None, region_type: type[Posi
     content.set_content("".join(parts))
 
 
-def render_ball_selector(content, x, y, del_button=False):
-    cell = 44
-    padding = 8
-    width = 8 * cell + 2 * padding + (cell if del_button else 0)
-    height = 2 * cell + 2 * padding
-    left = max(0, min(x - width / 2, PLAY_WIDTH + 2 * M - width))
-    top = max(0, min(y - height / 2, PLAY_HEIGHT + 2 * M - height))
-    parts = [
-        f'<rect x="{left}" y="{top}" width="{width}" height="{height}" '
-        f'rx="10" fill="#f8fafc" stroke="#64748b" pointer-events="all"/>',
-    ]
-    for i, (ball_id, (stroke, fill)) in enumerate(BALL_COLORS.items()):
-        cx = left + padding + (i % 8 + 0.5) * cell
-        cy = top + padding + (i // 8 + 0.5) * cell
-        label = "" if ball_id == "cue" else ball_id
-        parts.extend([
-            f'<circle cx="{cx}" cy="{cy}" r="17" fill="{fill}" '
-            f'stroke="{stroke if ball_id != "cue" else "#94a3b8"}" stroke-width="4"/>',
-            f'<circle cx="{cx}" cy="{cy}" r="10" fill="white"/>',
-            f'<text x="{cx}" y="{cy}" text-anchor="middle" dominant-baseline="central" '
-            f'font-size="13" font-family="sans-serif" fill="black">{label}</text>',
-            f'<rect id="select-{ball_id}" x="{cx - cell / 2}" y="{cy - cell / 2}" '
-            f'width="{cell}" height="{cell}" fill="transparent" pointer-events="all" '
-            f'cursor="pointer"><title>{"Cue ball" if ball_id == "cue" else "Ball " + ball_id}</title></rect>',
-        ])
-    if del_button:
-        cx = left + padding + 8.5 * cell
-        cy = top + height / 2
-        parts.extend([
-            f'<text x="{cx}" y="{cy}" text-anchor="middle" dominant-baseline="central" '
-            f'font-size="12" font-family="sans-serif" fill="#b91c1c">Delete</text>',
-            f'<rect id="delete-ball" x="{cx - cell / 2}" y="{top + padding}" '
-            f'width="{cell}" height="{2 * cell}" fill="transparent" '
-            f'pointer-events="all" cursor="pointer"><title>Delete ball</title></rect>',
-        ])
-    content.set_content("".join(parts))
-
-
 def render_circle_highlight(content, x, y, r):
     highlight = f'<circle cx="{x}" cy="{y}" r="{r + 2}" fill="purple" opacity="0.7" stroke="black" stroke_width="4" stroke-dasharray="3" />'
     content.set_content(content.content + highlight)
@@ -361,6 +346,23 @@ def two_ply_planner_search(layout: PlannerLayout, legal_target_balls: list[str])
 def page():
     ui.page_title("CueRouter Demo")
     ui.label("CueRouter Demo")
+    ui.add_body_html('<script>' + Path(__file__).with_name('position_editor.js').read_text() + '</script>')
+    ui.add_css("""
+        .position-viewport { position: relative; height: min(46dvh, 420px);
+            min-height: 200px; width: 100%; touch-action: none; overflow: hidden;
+            user-select: none; background: #202020; }
+        .position-viewport svg { width: 100%; height: 100%; display: block; }
+        .position-crosshair { position: absolute; left: 50%; top: 50%;
+            transform: translate(-50%, -50%); width: 32px; height: 32px;
+            pointer-events: none; filter: drop-shadow(0 0 2px black); }
+        .position-crosshair::before, .position-crosshair::after {
+            content: ''; position: absolute; background: white; }
+        .position-crosshair::before { left: 15px; width: 2px; height: 32px; }
+        .position-crosshair::after { top: 15px; height: 2px; width: 32px; }
+        .position-panel { width: min(100%, 560px); max-height: 95dvh; overflow-y: auto;
+            padding-bottom: max(16px, env(safe-area-inset-bottom)); }
+        .review-tools .q-btn, .position-panel .q-btn { min-width: 48px; min-height: 48px; }
+    """)
 
     state = {
         "captured_image": None,
@@ -378,9 +380,11 @@ def page():
         "legal_target_balls": [str(i) for i in range(1, 8)],
         "cached_plans": {},
         "is_two_ply": TWO_PLY,
+        "review_background": None,
     }
 
     def reset():
+        state["review_background"] = None
         for name in ("captured_image", "layout", "mode", "selection", "pending_corner", "selected_ball", "finish_manual_label"):
             state[name] = None
         for name in ("balls_screen", "unresolved_balls_screen", "pocket_rects", "cached_shots", "cached_plans"):
@@ -470,6 +474,14 @@ def page():
         render_controls.refresh()
         return selection
 
+    def cache_review_background(vision):
+        # Match the existing table SVG orientation: screen x follows table y.
+        transform = np.asarray([[0, PLAY_WIDTH / L, M], [PLAY_HEIGHT / W, 0, M], [0, 0, 1]])
+        warped = cv2.warpPerspective(vision.image_state.image, transform @ vision.H,
+                                     (PLAY_WIDTH + 2 * M, PLAY_HEIGHT + 2 * M))
+        _, encoded = cv2.imencode(".jpg", warped)
+        state["review_background"] = "data:image/jpeg;base64," + base64.b64encode(encoded).decode("ascii")
+
     async def on_upload(e):
         image_bytes = await e.file.read()
         image = cv2.imdecode(
@@ -485,6 +497,7 @@ def page():
 
         try:
             state["layout"] = vision.predict_layout(preview=False)
+            cache_review_background(vision)
             cache_balls()
             state["stage"] = await next_stage(state["stage"])
             table.set_content(render_svg(state["layout"]))
@@ -516,6 +529,7 @@ def page():
                 new_image_state.pockets = detections
                 try:
                     state["layout"] = vision.predict_layout(image_state=new_image_state)
+                    cache_review_background(vision)
                     state["stage"] = await next_stage(state["stage"])
                     ui.notify("Layout generation successful.")
                     table.set_content(render_svg(state["layout"]))
@@ -536,6 +550,99 @@ def page():
         auto_upload=True,
     ).props("accept=image/*")
 
+    async def open_position_editor(mode, ball_id, source=None):
+        layout = state["layout"]
+        position = getattr(layout, source[0])[ball_id] if source else (W / 2, L / 2)
+        if state["review_background"]:
+            scene = f'<image href="{state["review_background"]}" width="840" height="440"/>'
+            for field in ("balls_info", "unresolved_balls_info"):
+                for identity, xy in getattr(layout, field).items():
+                    sx, sy = to_screen(*xy)
+                    scene += (f'<circle cx="{sx}" cy="{sy}" r="13" fill="none" stroke="white"/>'
+                              f'<text x="{sx + 15}" y="{sy}" fill="white" stroke="black" '
+                              f'stroke-width="0.4" font-size="15">{identity}</text>')
+        else:
+            scene = render_svg(layout)
+        # The editor must outlive the identity picker that opens it.
+        with ui.context.client.content, ui.dialog().props("persistent") as dialog, ui.column().classes("bg-white rounded p-4 position-panel gap-3"):
+            ui.label(f'{mode} {"cue ball" if ball_id == "cue" else "ball " + ball_id}').classes("text-lg")
+            viewport = ui.html(
+                f'<div class="position-viewport"><svg xmlns="http://www.w3.org/2000/svg">{scene}</svg>'
+                '<div class="position-crosshair" aria-hidden="true"></div></div>',
+                sanitize=False,
+            ).classes("w-full")
+            host = f"document.getElementById('c{viewport.id}').positionEditor"
+            with ui.row().classes("w-full justify-center"):
+                ui.button(icon="remove", on_click=lambda: ui.run_javascript(f"{host}.zoom(0.8)")).props('aria-label="Zoom out"')
+                ui.button(icon="add", on_click=lambda: ui.run_javascript(f"{host}.zoom(1.25)")).props('aria-label="Zoom in"')
+            async def close():
+                await ui.run_javascript(f"{host}?.dispose()")
+                dialog.close()
+            async def confirm():
+                point = await ui.run_javascript(f"return {host}.point()")
+                try:
+                    place_review_ball(layout, ball_id, to_table(*point), source)
+                except ValueError as error:
+                    ui.notify(str(error), type="warning")
+                    return
+                cache_balls()
+                table.set_content(render_svg(layout))
+                ball_selector.set_content("")
+                await close()
+            with ui.row().classes("w-full justify-end"):
+                ui.button("Cancel", on_click=close).props("flat")
+                confirm_button = ui.button("Confirm position", on_click=confirm)
+                confirm_button.disable()
+        dialog.on("hide", dialog.delete)
+        dialog.open()
+        await ui.run_javascript(
+            "await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));"
+            f"window.initCuePositionEditor('c{viewport.id}', {json.dumps(to_screen(*position))});"
+        )
+        confirm_button.enable()
+
+    def choose_position_ball(mode):
+        layout = state["layout"]
+        with ui.dialog() as picker, ui.column().classes("bg-white rounded p-4 position-panel"):
+            ui.label(f"{mode} ball").classes("text-lg")
+            with ui.grid(columns=4).classes("w-full gap-2"):
+                choices = [(identity, None) for identity in BALL_COLORS] if mode == "Add" else [
+                    (identity, (field, identity))
+                    for field in ("balls_info", "unresolved_balls_info")
+                    for identity in getattr(layout, field)
+                ]
+                for identity, source in choices:
+                    async def choose(identity=identity, source=source):
+                        picker.close()
+                        await open_position_editor(mode, identity, source)
+                    button = ui.button("Cue" if identity == "cue" else identity, on_click=choose)
+                    if mode == "Add" and (identity in layout.balls_info or identity in layout.unresolved_balls_info):
+                        button.disable()
+            ui.button("Cancel", on_click=picker.close).props("flat")
+        picker.on("hide", picker.delete)
+        picker.open()
+
+    def review_ball(res):
+        state["selected_ball"] = (res, None)
+        source = ("balls_info" if res["type"] == "ball" else "unresolved_balls_info", res["id"])
+        with ui.dialog() as picker, ui.column().classes("bg-white rounded p-4 position-panel"):
+            ui.label("Cue ball" if res["id"] == "cue" else f'Ball {res["id"]}').classes("text-lg")
+            with ui.grid(columns=4).classes("w-full gap-2"):
+                for identity in BALL_COLORS:
+                    def assign(identity=identity):
+                        assign_ball("select-" + identity)
+                        picker.close()
+                    ui.button("Cue" if identity == "cue" else identity, on_click=assign)
+            async def move():
+                picker.close()
+                await open_position_editor("Move", res["id"], source)
+            with ui.row():
+                ui.button("Move", icon="open_with", on_click=move)
+                ui.button(icon="delete", on_click=lambda: (assign_ball("delete-ball"), picker.close())).props('aria-label="Delete ball"')
+                ui.button("Cancel", on_click=picker.close).props("flat")
+        picker.on("hide", picker.delete)
+        picker.open()
+
     def on_table_click(e):
         ball_selector.set_content("")
         state["selected_ball"] = None
@@ -546,10 +653,9 @@ def page():
                                  unresolved_balls_screen=state["unresolved_balls_screen"])
 
         if state["stage"] == Stage.REVIEW:
-            if res["type"] == "pocket" or not in_table(x, y):
+            if res["type"] not in ("ball", "ball_unresolved"):
                 return
-            state["selected_ball"] = (res, to_table(x, y))
-            render_ball_selector(ball_selector, x, y + R_BALL + 60, del_button=res["type"] != "table")
+            review_ball(res)
         elif state["stage"] == Stage.SELECT:
             if not in_table(x, y, allow_margin=True):
                 return
@@ -609,10 +715,9 @@ def page():
                     caption_msg.set_text("Selected target region. Click Next to execute.")
                 render_controls.refresh()
 
-    def on_ball_select(e):
+    def assign_ball(element_id):
         if state["stage"] != Stage.REVIEW or state["selected_ball"] is None:
             return
-        element_id = e.args["element_id"]
         if element_id != "delete-ball" and not element_id.startswith("select-"):
             return
         res, pos = state["selected_ball"]
@@ -840,7 +945,6 @@ def page():
         on_mouse=on_table_click,
     ).classes("w-full max-w-2xl")
     ball_selector = table.add_layer()
-    ball_selector.on("svg:pointerup", on_ball_select)
 
     @ui.refreshable
     def render_controls():
@@ -860,6 +964,9 @@ def page():
             ui.button("Finish manual label", on_click=state["finish_manual_label"])
             ui.button("Back", on_click=lambda: prev_stage(state["stage"]))
         elif state["stage"] == Stage.REVIEW:
+            with ui.row().classes("review-tools"):
+                ui.button("Add", icon="add", on_click=lambda: choose_position_ball("Add"))
+                ui.button("Move", icon="open_with", on_click=lambda: choose_position_ball("Move"))
             captured_image = ui.interactive_image(
                 source=state["captured_image"],
                 on_mouse=on_image_click,
